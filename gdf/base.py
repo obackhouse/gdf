@@ -205,6 +205,53 @@ class BaseGDF(lib.StreamObject):
 
         return policy
 
+    def get_qpts(self, return_map=False, time_reversal_symmetry=False):
+        """Get the q-points corresponding to the k-points.
+
+        Parameters
+        ----------
+        return_map : bool, optional
+            Whether to return the map between the q-points and the
+            k-points. Default value is `False`.
+        time_reversal_symmetry : bool, optional
+            Whether to return the time-reversal symmetry status of the
+            q-points.
+
+        Returns
+        -------
+        qpts : KPoints
+            The q-points.
+        qmap : list of list of tuple of int
+            The map between the q-points and the k-points. Only returned
+            if `return_map` is `True`.
+        conj : list of bool
+            The time-reversal symmetry status of the q-points. Only
+            returned if `time_reversal_symmetry` is `True`.
+        """
+
+        qpts = []
+        qmap = []
+        conj = []
+        for qpt, ki, kj, cc in kpts_helper.kk_adapted_iter(
+            self.cell, self.kpts._kpts, time_reversal_symmetry=True
+        ):
+            qpts.append(-qpt)  # sign difference c.f. PySCF
+            qmap.append(list(zip(ki, kj)))
+            conj.append(cc)
+            if not time_reversal_symmetry and not cc:
+                qpts.append(qpt)
+                qmap.append(list(zip(kj, ki)))
+
+        qpts = self.kpts.__class__(self.cell, np.array(qpts))
+
+        out = [qpts]
+        if return_map:
+            out.append(qmap)
+        if time_reversal_symmetry:
+            out.append(conj)
+
+        return tuple(out)
+
     def get_naoaux(self):
         """Get the maximum number of auxiliary basis functions."""
         return max(v.shape[0] for v in self._cderi.values())
@@ -228,3 +275,11 @@ class BaseGDF(lib.StreamObject):
     def naux(self):
         """Number of auxiliary functions."""
         return self.get_naoaux()
+
+    @property
+    def direct_scf_tol(self):
+        """Direct SCF tolerance, to appease PySCF API."""
+        exp_min = np.min(np.hstack(self.cell.bas_exps()))
+        lattice_sum_factor = max((2 * self.cell.rcut) ** 3 / self.cell.vol / exp_min, 1)
+        cutoff = self.cell.precision / lattice_sum_factor * 0.1
+        return cutoff
