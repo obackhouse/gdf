@@ -6,8 +6,8 @@ import itertools
 import numpy as np
 import scipy.linalg
 from pyscf import lib
-from pyscf.pbc.lib import kpts_helper
 from pyscf.agf2 import mpi_helper
+from pyscf.pbc.lib import kpts_helper
 
 
 def allow_single_kpt(output_is_kpts=False):
@@ -235,7 +235,6 @@ class KPoints:
         p1 = size if mpi_helper.rank == (mpi_helper.size - 1) else split(mpi_helper.rank + 1)
 
         return p1 - p0
-
 
     @allow_single_kpt(output_is_kpts=False)
     def is_zero(self, kpts):

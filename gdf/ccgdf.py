@@ -3,26 +3,26 @@
 Ref: J. Chem. Phys. 147, 164119 (2017)
 """
 
-import numpy as np
-import scipy.linalg
 import copy
 import ctypes
 
+import numpy as np
+import scipy.linalg
 from pyscf import lib
-from pyscf.lib import logger
-from pyscf.scf import _vhf
 from pyscf.agf2 import mpi_helper
 from pyscf.ao2mo.outcore import balance_partition
-from pyscf.pbc.tools import pbc
-from pyscf.pbc.lib import kpts_helper
+from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
 from pyscf.pbc.df.ft_ao import ft_ao, ft_aopair_kpts
+from pyscf.pbc.df.gdf_builder import _guess_eta, auxbar, estimate_ke_cutoff_for_eta
 from pyscf.pbc.df.incore import aux_e2
-from pyscf.pbc.df.gdf_builder import _guess_eta, estimate_ke_cutoff_for_eta, auxbar
 from pyscf.pbc.df.rsdf_builder import _estimate_meshz
+from pyscf.pbc.lib import kpts_helper
+from pyscf.pbc.tools import pbc
+from pyscf.scf import _vhf
 
 from gdf.base import BaseGDF
-from gdf.cell import make_auxcell, make_chgcell, fuse_auxcell_chgcell
+from gdf.cell import fuse_auxcell_chgcell, make_auxcell, make_chgcell
 
 libpbc = lib.load_library("libpbc")
 
@@ -31,17 +31,15 @@ class CCGDF(BaseGDF):
     __doc__ = BaseGDF.__doc__.format(
         description="Charge-compensated Gaussian density fitting.",
         extra_attributes=(
-            "eta : float"
-            "        Charge compensation parameter. If `None`, determine from",
-            "        `cell.precision`. Default value is `None`."
-        )
+            "eta : float" "        Charge compensation parameter. If `None`, determine from",
+            "        `cell.precision`. Default value is `None`.",
+        ),
     )
 
     # Extra attributes:
     eta = None
 
     _attributes = BaseGDF._attributes | {"eta"}
-
 
     def get_mesh_parameters(self, cell=None, auxcell=None, eta=None, mesh=None, precision=None):
         """
@@ -96,12 +94,11 @@ class CCGDF(BaseGDF):
         if cell.dimension == 2 and cell.low_dim_ft_type != "inf_vacuum":
             mesh[2] = _estimate_meshz(cell)
         elif cell.dimension < 2:
-            mesh[cell.dimension:] = cell.mesh[cell.dimension:]
+            mesh[cell.dimension :] = cell.mesh[cell.dimension :]
 
         mesh = cell.symmetrize_mesh(mesh)
 
         return mesh, eta, ke_cutoff
-
 
     def get_qpts(self, return_map=False, time_reversal_symmetry=False):
         """Get the q-points corresponding to the k-points.
@@ -130,7 +127,9 @@ class CCGDF(BaseGDF):
         qpts = []
         qmap = []
         conj = []
-        for qpt, ki, kj, cc in kpts_helper.kk_adapted_iter(self.cell, self.kpts._kpts, time_reversal_symmetry=True):
+        for qpt, ki, kj, cc in kpts_helper.kk_adapted_iter(
+            self.cell, self.kpts._kpts, time_reversal_symmetry=True
+        ):
             qpts.append(-qpt)  # sign difference c.f. PySCF
             qmap.append(list(zip(ki, kj)))
             conj.append(cc)
@@ -147,7 +146,6 @@ class CCGDF(BaseGDF):
             out.append(conj)
 
         return tuple(out)
-
 
     def build_int2c2e(self, fused_cell):
         """Build the bare 2-center 2-electron integrals.
@@ -171,7 +169,6 @@ class CCGDF(BaseGDF):
         cput1 = logger.timer(self, "bare 2c2e", *cput0)
 
         return int2c2e
-
 
     def build_j2c(
         self,
@@ -214,7 +211,7 @@ class CCGDF(BaseGDF):
         mesh, eta, ke_cutoff = self.get_mesh_parameters(
             cell=auxcell,
             eta=eta,
-            precision=auxcell.precision ** 2,
+            precision=auxcell.precision**2,
         )
         logger.debug(self, "Using mesh %s for 2c2e integrals", mesh)
 
@@ -268,7 +265,6 @@ class CCGDF(BaseGDF):
 
         return j2c
 
-
     def build_j2c_chol(self, j2c, q, threshold=None):
         """
         Get the inverse Cholesky factorization of the 2-center Coulomb
@@ -301,7 +297,7 @@ class CCGDF(BaseGDF):
         v = v[:, mask]
 
         # Inverse Cholesky decomposition
-        j2c_chol = np.dot(v * (w ** -0.5)[None], v.T.conj())
+        j2c_chol = np.dot(v * (w**-0.5)[None], v.T.conj())
 
         logger.debug1(
             self,
@@ -312,7 +308,6 @@ class CCGDF(BaseGDF):
         )
 
         return j2c_chol
-
 
     def build_int3c2e(self, fused_cell):
         """Build the bare 3-center 2-electron integrals.
@@ -353,7 +348,6 @@ class CCGDF(BaseGDF):
         logger.timer_debug1(self, "int3c2e", *cput0)
 
         return int3c2e
-
 
     def build_j3c(
         self,
@@ -454,7 +448,7 @@ class CCGDF(BaseGDF):
 
                 # Eq. 24
                 # TODO MPI
-                p0, p1, pn = balance_partition(self.cell.ao_loc_nr() * self.nao, self.nao ** 2)[0]
+                p0, p1, pn = balance_partition(self.cell.ao_loc_nr() * self.nao, self.nao**2)[0]
                 shls_slice = (p0, p1, 0, self.cell.nbas)
                 G_ao = ft_aopair_kpts(
                     cell,
@@ -513,10 +507,8 @@ class CCGDF(BaseGDF):
 
         return j3c
 
-
     def _build(self):
-        """Build the density fitting integrals.
-        """
+        """Build the density fitting integrals."""
 
         # Build the auxiliary cell
         auxcell = make_auxcell(
@@ -544,7 +536,6 @@ class CCGDF(BaseGDF):
         j3c = self.build_j3c(auxcell, fused_cell, fuse, j2c, mesh=mesh)
 
         return j3c
-
 
     @property
     def direct_scf_tol(self):
@@ -576,17 +567,15 @@ if __name__ == "__main__":
     df2.build()
 
     import itertools
-    #for ki, kj in itertools.product(range(len(kpts)), repeat=2):
-    #    kpt = kpts[[ki, kj]]
 
+    # for ki, kj in itertools.product(range(len(kpts)), repeat=2):
+    #    kpt = kpts[[ki, kj]]
     #    r1, i1, _ = list(df1.sr_loop(kpt, compact=False))[0]
     #    v1 = r1 + i1 * 1j
     #    eri1 = np.dot(v1.T, v1)
-
     #    r2, i2, _ = list(df2.sr_loop(kpt, compact=False))[0]
     #    v2 = r2 + i2 * 1j
     #    eri2 = np.dot(v2.T, v2)
-
     #    print(
     #        ki, kj,
     #        np.max(np.abs(eri1 - eri2)) < 1e-6,
@@ -601,8 +590,8 @@ if __name__ == "__main__":
     #                print(x)
     #                print(v1[x].reshape(4, 4).real)
     #                print(v2[x].reshape(4, 4).real)
-
     from pyscf.pbc.lib import kpts_helper
+
     kconserv = kpts_helper.get_kconserv(cell, kpts)
     policy = df2.mpi_policy()
     for ki, kj, kk in itertools.product(range(len(kpts)), repeat=3):
@@ -631,8 +620,12 @@ if __name__ == "__main__":
         eri2 = np.dot(v2.T, u2)
 
         print(
-            "%d %d %d %d %5s %.4g" % (
-                ki, kj, kk, kl,
+            "%d %d %d %d %5s %.4g"
+            % (
+                ki,
+                kj,
+                kk,
+                kl,
                 np.max(np.abs(eri1 - eri2)) < 1e-6,
                 np.max(np.abs(eri1 - eri2)),
             )

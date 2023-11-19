@@ -1,15 +1,15 @@
 """Auxiliary cells for density fitting.
 """
 
-import numpy as np
-import ctypes
 import copy
+import ctypes
 
+import numpy as np
 from pyscf import gto, lib
 from pyscf.lib import logger
-from pyscf.pbc.gto.cell import _estimate_rcut
 from pyscf.pbc.df.incore import make_auxcell as _make_auxcell
-from pyscf.pbc.df.rsdf_builder import estimate_ft_rcut, RCUT_THRESHOLD
+from pyscf.pbc.df.rsdf_builder import RCUT_THRESHOLD, estimate_ft_rcut
+from pyscf.pbc.gto.cell import _estimate_rcut
 
 
 def make_auxcell(cell, auxbasis, exp_to_discard=0.0):
@@ -82,7 +82,9 @@ def make_auxcell(cell, auxbasis, exp_to_discard=0.0):
     auxcell.rcut = np.max(rcut)
 
     logger.info(cell, "Dropped %d primitive fitting functions", ndrop)
-    logger.info(cell, "Auxiliary basis: num shells = %d, num cGTOs = %d", auxcell.nbas, auxcell.nao_nr())
+    logger.info(
+        cell, "Auxiliary basis: num shells = %d, num cGTOs = %d", auxcell.nbas, auxcell.nao_nr()
+    )
     logger.info(cell, "auxcell.rcut = %s", auxcell.rcut)
 
     return auxcell
@@ -116,8 +118,7 @@ def make_chgcell(auxcell, eta):
     p1 = p0 + 1
     l_max = np.max(auxcell._bas[:, gto.ANG_OF])
     norms = [
-        1.0 / (np.sqrt(4.0 * np.pi) * gto.gaussian_int(l * 2 + 2, eta))
-        for l in range(l_max + 1)
+        1.0 / (np.sqrt(4.0 * np.pi) * gto.gaussian_int(l * 2 + 2, eta)) for l in range(l_max + 1)
     ]
     for i in range(auxcell.natm):
         for l in set(auxcell._bas[auxcell._bas[:, gto.ATOM_OF] == i, gto.ANG_OF]):
@@ -130,7 +131,12 @@ def make_chgcell(auxcell, eta):
     chgcell._env = np.hstack((auxcell._env, _env))
     chgcell.rcut = _estimate_rcut(eta, l_max, 1.0, auxcell.precision)
 
-    logger.debug1(auxcell, "Compensating basis: num shells = %d, num cGTOs = %d", chgcell.nbas, chgcell.nao_nr())
+    logger.debug1(
+        auxcell,
+        "Compensating basis: num shells = %d, num cGTOs = %d",
+        chgcell.nbas,
+        chgcell.nao_nr(),
+    )
     logger.debug1(auxcell, "chgcell.rcut = %s", chgcell.rcut)
 
     return chgcell
@@ -186,8 +192,7 @@ def fuse_auxcell_chgcell(auxcell, chgcell):
         offset[chgcell.bas_atom(i), chgcell.bas_angular(i)] = chg_loc[i]
 
     def fuse(Lpq, axis=0):
-        """Fusion function.
-        """
+        """Fusion function."""
 
         # FIXME may happen in-place?
 
@@ -226,7 +231,7 @@ def fuse_auxcell_chgcell(auxcell, chgcell):
 
                 # Subtract the charge compensating part
                 for i0, i1 in lib.prange(c0, c1, nd):
-                    Lpq_aux[i0:i1] -= Lpq_chg[p0:p0+nd]
+                    Lpq_aux[i0:i1] -= Lpq_chg[p0 : p0 + nd]
 
                 if auxcell.cart:
                     # Get the spherical contribution

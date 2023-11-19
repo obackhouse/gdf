@@ -3,8 +3,8 @@
 
 import numpy as np
 from pyscf import lib
-from pyscf.lib import logger
 from pyscf.agf2 import mpi_helper
+from pyscf.lib import logger
 
 from gdf.kpts import KPoints
 
@@ -86,8 +86,7 @@ class BaseGDF(lib.StreamObject):
         raise NotImplementedError
 
     def build(self):
-        """Build the density fitting integrals.
-        """
+        """Build the density fitting integrals."""
 
         self.check_sanity()
         self.dump_flags()
