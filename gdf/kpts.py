@@ -236,6 +236,7 @@ class KPoints:
 
         return p1 - p0
 
+
     @allow_single_kpt(output_is_kpts=False)
     def is_zero(self, kpts):
         """

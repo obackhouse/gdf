@@ -4,6 +4,7 @@
 import numpy as np
 from pyscf import lib
 from pyscf.lib import logger
+from pyscf.agf2 import mpi_helper
 
 from gdf.kpts import KPoints
 
@@ -182,6 +183,28 @@ class BaseGDF(lib.StreamObject):
             LpqI = np.asarray(LpqI.reshape(min(p1 - p0, blksize), -1), order="C")
             sign = 1
             yield LpqR, LpqI, sign
+
+    def mpi_policy(self):
+        """
+        Return the k-point pairs that the current rank should compute
+        integral contributions for.
+
+        Returns
+        -------
+        policy : set of tuple of int
+            List of k-point pairs to compute integrals for.
+        """
+
+        i = 0
+        policy = set()
+        for ki in self.kpts.loop(1):
+            for kj in range(ki + 1):
+                if i % mpi_helper.size == mpi_helper.rank:
+                    policy.add((ki, kj))
+                    policy.add((kj, ki))
+                i += 1
+
+        return policy
 
     def get_naoaux(self):
         """Get the maximum number of auxiliary basis functions."""
