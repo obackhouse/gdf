@@ -1,6 +1,6 @@
 # gdf: Gaussian density fitting for periodic solids
 
-The `gdf` package implements various Gaussian density-fitting (GDF) models for periidic solids in quantum chemistry.
+The `gdf` package implements various Gaussian density-fitting (GDF) models for periodic solids in quantum chemistry.
 
 ### Installation
 
