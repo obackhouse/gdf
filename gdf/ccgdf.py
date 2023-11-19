@@ -17,7 +17,6 @@ from pyscf.pbc.df.ft_ao import ft_ao, ft_aopair_kpts
 from pyscf.pbc.df.gdf_builder import _guess_eta, auxbar, estimate_ke_cutoff_for_eta
 from pyscf.pbc.df.incore import aux_e2
 from pyscf.pbc.df.rsdf_builder import _estimate_meshz
-from pyscf.pbc.lib import kpts_helper
 from pyscf.pbc.tools import pbc
 from pyscf.scf import _vhf
 

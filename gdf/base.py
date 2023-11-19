@@ -5,6 +5,7 @@ import numpy as np
 from pyscf import lib
 from pyscf.agf2 import mpi_helper
 from pyscf.lib import logger
+from pyscf.pbc.lib import kpts_helper
 
 from gdf.kpts import KPoints
 
@@ -232,6 +233,7 @@ class BaseGDF(lib.StreamObject):
         qpts = []
         qmap = []
         conj = []
+        # TODO move this gdf.kpts
         for qpt, ki, kj, cc in kpts_helper.kk_adapted_iter(
             self.cell, self.kpts._kpts, time_reversal_symmetry=True
         ):
