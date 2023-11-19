@@ -1,7 +1,6 @@
 """Auxiliary cells for density fitting.
 """
 
-import copy
 import ctypes
 
 import numpy as np
@@ -109,7 +108,7 @@ def make_chgcell(auxcell, eta):
     """
 
     # Build the charge compensating cell
-    chgcell = copy.copy(auxcell)
+    chgcell = auxcell.copy()
     _env = [eta]
     _bas = []
 
@@ -169,7 +168,7 @@ def fuse_auxcell_chgcell(auxcell, chgcell):
         return auxcell, lambda Lpq, axis=0: Lpq
 
     # Build the fused cell
-    fused_cell = copy.copy(auxcell)
+    fused_cell = auxcell.copy()
     fused_cell._atm, fused_cell._bas, fused_cell._env = gto.conc_env(
         auxcell._atm,
         auxcell._bas,
