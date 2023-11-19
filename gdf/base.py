@@ -193,6 +193,16 @@ class BaseGDF(lib.StreamObject):
         return self.kpts
 
     @property
+    def nao(self):
+        """Number of atomic orbitals."""
+        return self.cell.nao
+
+    @property
+    def nao_pair(self):
+        """Number of AO pairs."""
+        return self.nao * (self.nao + 1) // 2
+
+    @property
     def naux(self):
         """Number of auxiliary functions."""
         return self.get_naoaux()

@@ -6,259 +6,22 @@ import scipy.linalg
 import copy
 import ctypes
 
-from gdf.base import BaseGDF
-
-from pyscf import gto, lib
+from pyscf import lib
 from pyscf.lib import logger
 from pyscf.scf import _vhf
 from pyscf.ao2mo.outcore import balance_partition
 from pyscf.pbc.tools import pbc
 from pyscf.pbc.lib import kpts_helper
-from pyscf.pbc.gto import _pbcintor
-from pyscf.pbc.gto.cell import _estimate_rcut
 from pyscf.pbc.df.aft import weighted_coulG
-from pyscf.pbc.df.ft_ao import ft_ao, ft_aopair_kpts, _RangeSeparatedCell
-from pyscf.pbc.df.incore import make_auxcell as _make_auxcell, aux_e2
+from pyscf.pbc.df.ft_ao import ft_ao, ft_aopair_kpts
+from pyscf.pbc.df.incore import aux_e2
 from pyscf.pbc.df.gdf_builder import _guess_eta, estimate_ke_cutoff_for_eta, auxbar
-from pyscf.pbc.df.rsdf_builder import _estimate_meshz, _ExtendedMoleFT, estimate_ft_rcut, RCUT_THRESHOLD
+from pyscf.pbc.df.rsdf_builder import _estimate_meshz
 
+from gdf.base import BaseGDF
+from gdf.cell import make_auxcell, make_chgcell, fuse_auxcell_chgcell
 
-def make_auxcell(cell, auxbasis, exp_to_discard=0.0):
-    """
-    Build a cell with the density fitting `auxbasis` as the basis set.
-
-    To simplify the charged-compensated algorithm, the auxiliary basis
-    normalisation coefficients are
-
-    .. math::
-        \int (r^{l} e^{-\alpha r^{2}}) r^{2} dr
-
-    Parameters
-    ----------
-    cell : pyscf.pbc.gto.Cell
-        Cell object.
-    auxbasis : str
-        Auxiliary basis set.
-    exp_to_discard : float, optional
-        Threshold for discarding auxiliary basis functions. Default
-        value is `0.0`.
-
-    Returns
-    -------
-    auxcell : pyscf.pbc.gto.Cell
-        Auxiliary cell object.
-    """
-
-    # Build the auxilairy cell
-    auxcell = _make_auxcell(cell, auxbasis)
-    _env = auxcell._env.copy()
-
-    # Set the normalisation coefficients
-    ndrop = 0
-    rcut = []
-    steep = []
-    for i in range(len(auxcell._bas)):
-        l = auxcell.bas_angular(i)
-        α = auxcell.bas_exp(i)
-
-        nprim = auxcell.bas_nprim(i)
-        ncont = auxcell.bas_nctr(i)
-
-        pi = auxcell._bas[i, gto.PTR_COEFF]
-        c = auxcell._env[pi : pi + nprim * ncont].reshape(ncont, nprim).T
-
-        if exp_to_discard is not None and np.any(α < exp_to_discard):
-            mask = α >= exp_to_discard
-            α = α[mask]
-            c = c[mask]
-            nprim, ndrop = len(α), ndrop + nprim - len(α)
-
-        if nprim > 0:
-            pe = auxcell._bas[i, gto.PTR_EXP]
-            auxcell._bas[i, gto.NPRIM_OF] = nprim
-            _env[pe : pe + nprim] = α
-
-            mp = gto.gaussian_int(l * 2 + 2, α)
-            mp = lib.einsum("pi,p->i", c, mp)
-
-            cs = lib.einsum("pi,i->pi", c, 1 / mp) * np.sqrt(0.25 / np.pi)
-            _env[pi : pi + nprim * ncont] = cs.T.ravel()
-
-            r = _estimate_rcut(α, l, np.max(np.abs(cs), axis=1), cell.precision)
-            rcut.append(np.max(r))
-            steep.append(i)
-
-    auxcell._env = _env
-    auxcell._bas = np.asarray(auxcell._bas[steep], order="C")
-    auxcell.rcut = np.max(rcut)
-
-    logger.info(cell, "Dropped %d primitive fitting functions", ndrop)
-    logger.info(cell, "Auxiliary basis: num shells = %d, num cGTOs = %d", auxcell.nbas, auxcell.nao_nr())
-    logger.info(cell, "auxcell.rcut = %s", auxcell.rcut)
-
-    return auxcell
-
-
-def make_chgcell(auxcell, eta):
-    """
-    Build a cell with smooth Gaussian functions for each angular momenta
-    to carry the compensating charge.
-
-    Parameters
-    ----------
-    auxcell : pyscf.pbc.gto.Cell
-        Cell object with the auxiliary basis.
-    eta : float
-        Charge compensation parameter.
-
-    Returns
-    -------
-    chgcell : pyscf.pbc.gto.Cell
-        Charge compensating cell.
-    """
-
-    # Build the charge compensating cell
-    chgcell = copy.copy(auxcell)
-    _env = [eta]
-    _bas = []
-
-    # Set the normalisation coefficients
-    p0 = auxcell._env.size
-    p1 = p0 + 1
-    l_max = np.max(auxcell._bas[:, gto.ANG_OF])
-    norms = [
-        1.0 / (np.sqrt(4.0 * np.pi) * gto.gaussian_int(l * 2 + 2, eta))
-        for l in range(l_max + 1)
-    ]
-    for i in range(auxcell.natm):
-        for l in set(auxcell._bas[auxcell._bas[:, gto.ATOM_OF] == i, gto.ANG_OF]):
-            _bas.append([i, l, 1, 1, 0, p0, p1, 0])
-            _env.append(norms[l])
-            p1 += 1
-
-    chgcell._atm = auxcell._atm
-    chgcell._bas = np.asarray(_bas, dtype=np.int32).reshape(-1, gto.BAS_SLOTS)
-    chgcell._env = np.hstack((auxcell._env, _env))
-    chgcell.rcut = _estimate_rcut(eta, l_max, 1.0, auxcell.precision)
-
-    logger.debug1(auxcell, "Compensating basis: num shells = %d, num cGTOs = %d", chgcell.nbas, chgcell.nao_nr())
-    logger.debug1(auxcell, "chgcell.rcut = %s", chgcell.rcut)
-
-    return chgcell
-
-
-def fuse_auxcell_chgcell(auxcell, chgcell):
-    """
-    Build a cell fusing the auxiliary and charge compensating basis
-    sets. Also returns a function to adapt a matrix in the fused basis
-    to the auxiliary basis along the given axis.
-
-    Parameters
-    ----------
-    auxcell : pyscf.pbc.gto.Cell
-        Cell object with the auxiliary basis.
-    chgcell : pyscf.pbc.gto.Cell
-        Cell object with the charge compensating basis.
-
-    Returns
-    -------
-    fused_cell : pyscf.pbc.gto.Cell
-        Cell object with the fused basis.
-    fuse : callable
-        Function to adapt a matrix in the fused basis to the auxiliary
-        basis along the given axis.
-    """
-
-    # 0D systems have no charge compensation
-    if auxcell.dimension == 0:
-        return auxcell, lambda Lpq, axis=0: Lpq
-
-    # Build the fused cell
-    fused_cell = copy.copy(auxcell)
-    fused_cell._atm, fused_cell._bas, fused_cell._env = gto.conc_env(
-        auxcell._atm,
-        auxcell._bas,
-        auxcell._env,
-        chgcell._atm,
-        chgcell._bas,
-        chgcell._env,
-    )
-    fused_cell.rcut = max(auxcell.rcut, chgcell.rcut)
-
-    # Get the offset for each charge compensating basis function
-    aux_loc = auxcell.ao_loc_nr()
-    naux = aux_loc[-1]
-    if auxcell.cart:
-        aux_loc_sph = auxcell.ao_loc_nr(cart=False)
-        naux_sph = aux_loc_sph[-1]
-    chg_loc = chgcell.ao_loc_nr()
-    offset = -np.ones((chgcell.natm, 8), dtype=int)
-    for i in range(chgcell.nbas):
-        offset[chgcell.bas_atom(i), chgcell.bas_angular(i)] = chg_loc[i]
-
-    def fuse(Lpq, axis=0):
-        """Fusion function.
-        """
-
-        # FIXME may happen in-place?
-
-        # If we need the final axis, tranpose
-        if axis == 1 and Lpq.ndim == 2:
-            Lpq = lib.transpose(Lpq)
-
-        # Get the auxiliary and charge compensating parts
-        Lpq_aux = Lpq[:naux]
-        Lpq_chg = Lpq[naux:]
-
-        # Initialise the fused matrix
-        if auxcell.cart:
-            if Lpq_aux.ndim == 1:
-                npq = 1
-                Lpq_out = np.empty((naux_sph,), dtype=Lpq.dtype)
-            else:
-                npq = Lpq.shape[1]
-                Lpq_out = np.empty((naux_sph, npq), dtype=Lpq.dtype)
-            if np.iscomplexobj(Lpq_aux):
-                npq *= 2  # c2s supports double only
-        else:
-            Lpq_out = Lpq_aux
-
-        for i in range(auxcell.nbas):
-            l = auxcell.bas_angular(i)
-            p0 = offset[auxcell.bas_atom(i), l]
-
-            if p0 >= 0:
-                if auxcell.cart:
-                    nd = (l + 1) * (l + 2) // 2
-                    s0, s1 = aux_loc_sph[i], aux_loc_sph[i + 1]
-                else:
-                    nd = 2 * l + 1
-                c0, c1 = aux_loc[i], aux_loc[i + 1]
-
-                # Subtract the charge compensating part
-                for i0, i1 in lib.prange(c0, c1, nd):
-                    Lpq_aux[i0:i1] -= Lpq_chg[p0:p0+nd]
-
-                if auxcell.cart:
-                    # Get the spherical contribution
-                    if l < 2:
-                        Lpq_out[s0:s1] = Lpq_aux[c0:c1]
-                    else:
-                        Lpq_cart = np.asarray(Lpq_aux[c0:c1], order="C")
-                        gto.moleintor.libcgto.CINTc2s_ket_sph(
-                            Lpq_out[s0:s1].ctypes.data_as(ctypes.c_void_p),
-                            ctypes.c_int(npq * auxcell.bas_nctr(i)),
-                            Lpq_cart.ctypes.data_as(ctypes.c_void_p),
-                            ctypes.c_int(l),
-                        )
-
-        # If we need the final axis, tranpose back
-        if axis == 1 and Lpq_aux.ndim == 2:
-            Lpq_out = lib.transpose(Lpq_out)
-
-        return np.asarray(Lpq_out, order="A")
-
-    return fused_cell, fuse
+libpbc = lib.load_library("libpbc")
 
 
 class CCGDF(BaseGDF):
@@ -338,7 +101,29 @@ class CCGDF(BaseGDF):
 
 
     def get_qpts(self, return_map=False, time_reversal_symmetry=False):
-        # TODO move
+        """Get the q-points corresponding to the k-points.
+
+        Parameters
+        ----------
+        return_map : bool, optional
+            Whether to return the map between the q-points and the
+            k-points. Default value is `False`.
+        time_reversal_symmetry : bool, optional
+            Whether to return the time-reversal symmetry status of the
+            q-points.
+
+        Returns
+        -------
+        qpts : KPoints
+            The q-points.
+        qmap : list of list of tuple of int
+            The map between the q-points and the k-points. Only returned
+            if `return_map` is `True`.
+        conj : list of bool
+            The time-reversal symmetry status of the q-points. Only
+            returned if `time_reversal_symmetry` is `True`.
+        """
+
         qpts = []
         qmap = []
         conj = []
@@ -378,7 +163,7 @@ class CCGDF(BaseGDF):
         cput0 = (logger.process_clock(), logger.perf_counter())
         qpts, _ = self.get_qpts(time_reversal_symmetry=True)
 
-        int2c2e = list(fused_cell.pbc_intor("int2c2e", hermi=0, kpts=-qpts._kpts))  # sign difference c.f. PySCF
+        int2c2e = list(fused_cell.pbc_intor("int2c2e", hermi=0, kpts=-qpts._kpts))
 
         cput1 = logger.timer(self, "bare 2c2e", *cput0)
 
@@ -411,8 +196,6 @@ class CCGDF(BaseGDF):
         j2c : list of ndarray
             List of 2-center Coulomb integrals for each q-point.
         """
-
-        # TODO exploit conjugate symmetry in k-points
 
         cput0 = (logger.process_clock(), logger.perf_counter())
         qpts, _ = self.get_qpts(time_reversal_symmetry=True)
@@ -448,9 +231,9 @@ class CCGDF(BaseGDF):
                 b=reciprocal_vectors,
                 gxyz=grid,
                 Gvbase=vGbase,
-                kpt=-qpts[q],  # sign difference c.f. PySCF
+                kpt=-qpts[q],
             ).T
-            G_aux = G_chg[naux:] * weighted_coulG(self, -qpts[q], mesh=mesh)  # sign difference c.f. PySCF
+            G_aux = G_chg[naux:] * weighted_coulG(self, -qpts[q], mesh=mesh)
 
             # Eq. 32 final three terms:
             j2c_comp = np.dot(G_aux.conj(), G_chg.T)
@@ -460,7 +243,7 @@ class CCGDF(BaseGDF):
             j2c[q][:naux, naux:] = j2c[q][naux:, :naux].T.conj()
 
             j2c[q] = (j2c[q] + j2c[q].T.conj()) * 0.5
-            j2c[q] = fuse(fuse(j2c[q]).T).T  # FIXME use axis argument
+            j2c[q] = fuse(fuse(j2c[q], axis=1), axis=0)
 
             del G_chg, G_aux, j2c_comp
 
@@ -492,8 +275,6 @@ class CCGDF(BaseGDF):
             Inverse Cholesky factorization of the 2-center Coulomb
             integral.
         """
-
-        # FIXME should we include the other methods?
 
         if threshold is None:
             threshold = self.linear_dep_threshold
@@ -527,18 +308,16 @@ class CCGDF(BaseGDF):
         """
 
         cput0 = (logger.process_clock(), logger.perf_counter())
-        nao = self.cell.nao_nr()
         ngrids = fused_cell.nao_nr()
         aux_loc = fused_cell.ao_loc_nr(fused_cell.cart)
 
         # Get the k-point pairs
         kpts = self.kpts
-        #kpt_pairs_idx = [(ki, kj) for ki in range(len(kpts)) for kj in range(ki + 1)]
         kpt_pairs_idx = [(ki, kj) for ki in range(len(kpts)) for kj in range(len(kpts))]
         kpt_pairs = np.array([(kpts[ki], kpts[kj]) for ki, kj in kpt_pairs_idx])
 
         # Initialise arrays
-        int3c2e = {idx: np.zeros((ngrids, nao * (nao + 1) // 2), dtype=np.complex128) for idx in kpt_pairs_idx}
+        int3c2e = {idx: np.zeros((ngrids, self.nao_pair), dtype=np.complex128) for idx in kpt_pairs_idx}
 
         for p0, p1 in lib.prange(0, fused_cell.nbas, fused_cell.nbas):  # TODO MPI
             cput1 = (logger.process_clock(), logger.perf_counter())
@@ -555,14 +334,7 @@ class CCGDF(BaseGDF):
                 shls_slice=shls_slice,
             )
             int3c2e_part = lib.transpose(int3c2e_part, axes=(0, 2, 1))
-
-            #if int3c2e_part.shape[-1] != (nao * nao):
-            #    shape = int3c2e_part.shape[:-1]
-            #    int3c2e_part = int3c2e_part.reshape(np.prod(shape), nao * (nao + 1) // 2)
-            #    int3c2e_part = lib.unpack_tril(int3c2e_part, lib.HERMITIAN, axis=-1)
-
-            #int3c2e_part = int3c2e_part.reshape(-1, q1 - q0, nao * nao)
-            int3c2e_part = int3c2e_part.reshape(-1, q1 - q0, nao * (nao + 1) // 2)
+            int3c2e_part = int3c2e_part.reshape(-1, q1 - q0, self.nao_pair)
 
             for k, (ki, kj) in enumerate(kpt_pairs_idx):
                 int3c2e[ki, kj][q0:q1] = int3c2e_part[k]
@@ -608,22 +380,15 @@ class CCGDF(BaseGDF):
             Array of 3-center Coulomb integrals for each k-point pair.
         """
 
-        # TODO can we do kij/kji symmetry?
-
         cput0 = (logger.process_clock(), logger.perf_counter())
 
         kpts = self.kpts
         qpts, qpt_idx, conj = self.get_qpts(return_map=True, time_reversal_symmetry=True)
-        nao = self.cell.nao_nr()
         naux = auxcell.nao_nr()
-
-        # Determine a map between q-points and k-points
-        #qpt_idx = [[(ki, kj) for ki, kj in qpt_idx[q] if ki >= kj] for q in range(len(qpts))]  # FIXME
-        qpt_idx = [[(ki, kj) for ki, kj in qpt_idx[q]] for q in range(len(qpts))]
 
         # Get the G vectors
         vG, vGbase, _ = fused_cell.get_Gv_weights(mesh)
-        ngrids = vG.shape[0]
+        ngrids = np.prod(mesh)
         grid = lib.cartesian_prod([np.arange(len(x)) for x in vGbase])
         reciprocal_vectors = cell.reciprocal_vectors()
 
@@ -631,13 +396,7 @@ class CCGDF(BaseGDF):
         int3c2e = self.build_int3c2e(fused_cell)
 
         # Initialise arrays
-        j3c = {}
-        def _add_j3c(idx, j3c_part):
-            """Less shady promotion than a `defaultdict`.
-            """
-            if idx in j3c:
-                j3c_part = j3c_part + j3c[idx]
-            j3c[idx] = j3c_part
+        j3c_tri = {}
 
         for q in qpts.loop(1):
             # Take the inverse Cholesky factorisation of the 2-center
@@ -652,8 +411,9 @@ class CCGDF(BaseGDF):
             for time_reversal in range((not conj[q]) + 1):
                 kis = [tup[time_reversal] for tup in qpt_idx[q]]
                 kjs = [tup[1 - time_reversal] for tup in qpt_idx[q]]
-                qpt = -qpts[q] if time_reversal == 0 else qpts[q]  # sign difference c.f. PySCF
-                fconj = lambda x: x if time_reversal == 0 else x.conj()
+                qpt = -qpts[q] if time_reversal == 0 else qpts[q]
+                if time_reversal:
+                    j2c_chol = j2c_chol.conj()
 
                 # Eq. 33
                 shls_slice = (auxcell.nbas, fused_cell.nbas)
@@ -664,9 +424,9 @@ class CCGDF(BaseGDF):
                     b=reciprocal_vectors,
                     gxyz=grid,
                     Gvbase=vGbase,
-                    kpt=qpt,  # sign difference c.f. PySCF
+                    kpt=qpt,
                 )
-                G_chg *= weighted_coulG(self, qpt, mesh=mesh).ravel()[:, None]  # sign difference c.f. PySCF
+                G_chg *= weighted_coulG(self, qpt, mesh=mesh).ravel()[:, None]
                 logger.debug1(self, "Norm of FT for fused cell: %.6g", np.linalg.norm(G_chg))
 
                 # Eq. 26
@@ -677,7 +437,7 @@ class CCGDF(BaseGDF):
                     ovlp = [lib.pack_tril(s) for s in ovlp]
 
                 # Eq. 24
-                p0, p1, pn = balance_partition(self.cell.ao_loc_nr() * nao, nao * nao)[0]
+                p0, p1, pn = balance_partition(self.cell.ao_loc_nr() * self.nao, self.nao ** 2)[0]
                 shls_slice = (p0, p1, 0, self.cell.nbas)
                 G_ao = ft_aopair_kpts(
                     cell,
@@ -687,10 +447,10 @@ class CCGDF(BaseGDF):
                     aosym="s2",
                     gxyz=grid,
                     Gvbase=vGbase,
-                    q=qpt,  # sign difference c.f. PySCF
+                    q=qpt,
                     kptjs=kpts[kjs],
                 )
-                G_ao = G_ao.reshape(-1, ngrids, nao*(nao+1)//2)
+                G_ao = G_ao.reshape(-1, ngrids, self.nao_pair)
                 logger.debug1(self, "Norm of FT for AO cell: %.6g", np.linalg.norm(G_ao))
 
                 for i, (ki, kj) in enumerate(zip(kis, kjs)):
@@ -699,8 +459,8 @@ class CCGDF(BaseGDF):
 
                     # Eq. 31, second term
                     if qpts.is_zero(qpt):
-                        for j in np.where(vbar != 0)[0]:
-                            v[j] -= vbar[j] * ovlp[i]
+                        mask = np.where(vbar != 0)[0]
+                        v[mask] -= lib.einsum("i,j->ij", vbar[mask], ovlp[i])
 
                     # Eq. 31, third term
                     v[naux:] -= np.dot(G_chg.T.conj(), G_ao[i])
@@ -709,26 +469,23 @@ class CCGDF(BaseGDF):
                     v = fuse(v)
 
                     # Eq. 29
-                    v = np.dot(fconj(j2c_chol), v)
+                    v = np.dot(j2c_chol, v)
 
-                    _add_j3c((ki, kj), v)
+                    j3c_tri[ki, kj] = v + j3c_tri.get((ki, kj), 0.0)
                     logger.debug(self, "Filled j3c for kpt [%d, %d]", ki, kj)
 
-        _j3c = {}
-        libpbc = lib.load_library("libpbc")
+        # Unpack the three-center integrals
+        j3c = {}
         for ki, kj in self.kpts.loop(2):
-            tril = j3c[ki, kj]
-            triu = j3c[kj, ki]
-            out = np.zeros((naux, nao, nao), dtype=np.complex128)
+            out = np.zeros((naux, self.nao, self.nao), dtype=np.complex128)
             libpbc.PBCunpack_tril_triu(
                 out.ctypes.data_as(ctypes.c_void_p),
-                tril.ctypes.data_as(ctypes.c_void_p),
-                triu.ctypes.data_as(ctypes.c_void_p),
+                j3c_tri[ki, kj].ctypes.data_as(ctypes.c_void_p),
+                j3c_tri[kj, ki].ctypes.data_as(ctypes.c_void_p),
                 ctypes.c_int(naux),
-                ctypes.c_int(nao),
+                ctypes.c_int(self.nao),
             )
-            _j3c[ki, kj] = out
-        j3c = _j3c
+            j3c[ki, kj] = out
 
         logger.timer(self, "j3c", *cput0)
 
@@ -756,7 +513,7 @@ class CCGDF(BaseGDF):
         chgcell = make_chgcell(auxcell, eta)
 
         # Build the fused cell
-        fused_cell,fuse = fuse_auxcell_chgcell(auxcell, chgcell)
+        fused_cell, fuse = fuse_auxcell_chgcell(auxcell, chgcell)
 
         # Get the 2-center Coulomb integrals
         j2c = self.build_j2c(auxcell, fused_cell, fuse, eta=eta)
@@ -780,13 +537,13 @@ if __name__ == "__main__":
 
     cell = pyscf.pbc.gto.Cell()
     cell.atom = "He 0 0 0; He 1 1 1"
-    cell.basis = "cc-pvdz"
+    cell.basis = "6-31g"
     cell.a = np.eye(3) * 3
     cell.verbose = 3
     cell.precision = 1e-14
     cell.build()
 
-    kpts = cell.make_kpts([3, 2, 2])
+    kpts = cell.make_kpts([3, 2, 1])
 
     df1 = pyscf.pbc.df.DF(cell, kpts=kpts)
     df1.auxbasis = "weigend"
