@@ -61,11 +61,14 @@ class KPoints:
         if not isinstance(kpts, np.ndarray):
             kpts = kpts.kpts
 
+        # We need to build this before handling the wrap-around to get
+        # consistent behaviour - why?
+        self._kconserv = kpts_helper.get_kconserv(cell, kpts)
+
         if wrap_around:
             kpts = self.wrap_around(kpts)
         self._kpts = kpts
 
-        self._kconserv = kpts_helper.get_kconserv(cell, kpts)
         self._kpts_hash = {self.hash_kpts(kpt): k for k, kpt in enumerate(self._kpts)}
 
     @allow_single_kpt(output_is_kpts=True)

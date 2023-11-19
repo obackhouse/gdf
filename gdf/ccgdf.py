@@ -325,7 +325,7 @@ class CCGDF(BaseGDF):
         # Get the k-point pairs
         # TODO can we exploit symmetry here?
         policy = self.mpi_policy()
-        kpt_pairs = np.array([(kpts[ki], kpts[kj]) for ki, kj in policy])
+        kpt_pairs = np.array([(self.kpts[ki], self.kpts[kj]) for ki, kj in policy])
 
         # Initialise arrays
         int3c2e = {idx: np.zeros((ngrids, self.nao_pair), dtype=np.complex128) for idx in policy}
@@ -394,7 +394,7 @@ class CCGDF(BaseGDF):
         vG, vGbase, _ = fused_cell.get_Gv_weights(mesh)
         ngrids = np.prod(mesh)
         grid = lib.cartesian_prod([np.arange(len(x)) for x in vGbase])
-        reciprocal_vectors = cell.reciprocal_vectors()
+        reciprocal_vectors = self.cell.reciprocal_vectors()
 
         # Get the bare 3c2e integrals (eq. 31, first term)
         int3c2e = self.build_int3c2e(fused_cell)
@@ -451,7 +451,7 @@ class CCGDF(BaseGDF):
                 p0, p1, pn = balance_partition(self.cell.ao_loc_nr() * self.nao, self.nao**2)[0]
                 shls_slice = (p0, p1, 0, self.cell.nbas)
                 G_ao = ft_aopair_kpts(
-                    cell,
+                    self.cell,
                     vG,
                     shls_slice=shls_slice,
                     b=reciprocal_vectors,
@@ -543,90 +543,3 @@ class CCGDF(BaseGDF):
         lattice_sum_factor = max((2 * self.cell.rcut) ** 3 / self.cell.vol / exp_min, 1)
         cutoff = self.cell.precision / lattice_sum_factor * 0.1
         return cutoff
-
-
-if __name__ == "__main__":
-    import pyscf.pbc
-
-    cell = pyscf.pbc.gto.Cell()
-    cell.atom = "He 0 0 0; He 1 1 1"
-    cell.basis = "6-31g"
-    cell.a = np.eye(3) * 3
-    cell.verbose = 3
-    cell.precision = 1e-14
-    cell.build()
-
-    kpts = cell.make_kpts([3, 2, 1])
-
-    df1 = pyscf.pbc.df.DF(cell, kpts=kpts)
-    df1.auxbasis = "weigend"
-    df1._prefer_ccdf = True
-    df1.build()
-
-    df2 = CCGDF(cell, kpts, auxbasis="weigend")
-    df2.build()
-
-    import itertools
-
-    # for ki, kj in itertools.product(range(len(kpts)), repeat=2):
-    #    kpt = kpts[[ki, kj]]
-    #    r1, i1, _ = list(df1.sr_loop(kpt, compact=False))[0]
-    #    v1 = r1 + i1 * 1j
-    #    eri1 = np.dot(v1.T, v1)
-    #    r2, i2, _ = list(df2.sr_loop(kpt, compact=False))[0]
-    #    v2 = r2 + i2 * 1j
-    #    eri2 = np.dot(v2.T, v2)
-    #    print(
-    #        ki, kj,
-    #        np.max(np.abs(eri1 - eri2)) < 1e-6,
-    #        np.max(np.abs(v1) - np.abs(v2)) < 1e-6,
-    #        np.max(np.abs(v1 - v2)) < 1e-6,
-    #        np.max(np.abs(eri1 - eri2)),
-    #    )
-    #    #print([np.linalg.norm(np.abs(v1[i]) - np.abs(v2[i])) for i in range(len(v1))])
-    #    if (ki, kj) == (0, 2) and 0:
-    #        for x in range(len(v1)):
-    #            if not np.allclose(v1[x], v2[x]):
-    #                print(x)
-    #                print(v1[x].reshape(4, 4).real)
-    #                print(v2[x].reshape(4, 4).real)
-    from pyscf.pbc.lib import kpts_helper
-
-    kconserv = kpts_helper.get_kconserv(cell, kpts)
-    policy = df2.mpi_policy()
-    for ki, kj, kk in itertools.product(range(len(kpts)), repeat=3):
-        kl = kconserv[ki, kj, kk]
-        kpt_ij = kpts[[ki, kj]]
-        kpt_kl = kpts[[kk, kl]]
-
-        r1, i1, _ = list(df1.sr_loop(kpt_ij, compact=False))[0]
-        v1 = r1 + i1 * 1j
-        r1, i1, _ = list(df1.sr_loop(kpt_kl, compact=False))[0]
-        u1 = r1 + i1 * 1j
-        eri1 = np.dot(v1.T, u1)
-
-        if (ki, kj) in policy:
-            r2, i2, _ = list(df2.sr_loop(kpt_ij, compact=False))[0]
-            v2 = r2 + i2 * 1j
-        else:
-            v2 = np.zeros_like(v1)
-        v2 = mpi_helper.allreduce(v2)
-        if (kk, kl) in policy:
-            r2, i2, _ = list(df2.sr_loop(kpt_kl, compact=False))[0]
-            u2 = r2 + i2 * 1j
-        else:
-            u2 = np.zeros_like(u1)
-        u2 = mpi_helper.allreduce(u2)
-        eri2 = np.dot(v2.T, u2)
-
-        print(
-            "%d %d %d %d %5s %.4g"
-            % (
-                ki,
-                kj,
-                kk,
-                kl,
-                np.max(np.abs(eri1 - eri2)) < 1e-6,
-                np.max(np.abs(eri1 - eri2)),
-            )
-        )

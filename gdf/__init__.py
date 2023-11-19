@@ -12,3 +12,4 @@ import pyscf
 from gdf import base
 from gdf import kpts
 from gdf import ccgdf
+from gdf.ccgdf import CCGDF
