@@ -290,7 +290,6 @@ class CCGDF(BaseGDF):
         # Fill the array
         for k, (ki, kj) in enumerate(policy):
             int3c2e[ki, kj] = int3c2e_part[k]
-            print(ki, kj, lib.fp(int3c2e[ki, kj]))
 
         logger.timer_debug1(self, "int3c2e", *cput0)
 
