@@ -13,7 +13,7 @@ from pyscf.agf2 import mpi_helper
 from pyscf.ao2mo.outcore import balance_partition
 from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
-from pyscf.pbc.df.ft_ao import ft_ao, ft_aopair_kpts
+from pyscf.pbc.df.ft_ao import ft_ao
 from pyscf.pbc.df.gdf_builder import _guess_eta, auxbar, estimate_ke_cutoff_for_eta
 from pyscf.pbc.df.incore import aux_e2
 from pyscf.pbc.df.rsdf_builder import _estimate_meshz
@@ -22,6 +22,7 @@ from pyscf.scf import _vhf
 
 from gdf.base import BaseGDF
 from gdf.cell import fuse_auxcell_chgcell, make_auxcell, make_chgcell
+from gdf.ft import gen_ft_aopair_kpts
 
 libpbc = lib.load_library("libpbc")
 
@@ -348,6 +349,9 @@ class CCGDF(BaseGDF):
         grid = lib.cartesian_prod([np.arange(len(x)) for x in vGbase])
         reciprocal_vectors = self.cell.reciprocal_vectors()
 
+        # Get the Fourier transform kernel
+        ft_aopair_kpts = gen_ft_aopair_kpts(self.cell, kmesh=self.kpts.kmesh)
+
         # Get the bare 3c2e integrals (eq. 31, first term)
         int3c2e = self.build_int3c2e(fused_cell)
 
@@ -400,18 +404,13 @@ class CCGDF(BaseGDF):
 
                 # Eq. 24
                 # TODO MPI
-                p0, p1, pn = balance_partition(self.cell.ao_loc_nr() * self.nao, self.nao**2)[0]
-                shls_slice = (p0, p1, 0, self.cell.nbas)
                 G_ao = ft_aopair_kpts(
-                    self.cell,
                     vG,
-                    shls_slice=shls_slice,
-                    b=reciprocal_vectors,
-                    aosym="s2",
-                    gxyz=grid,
                     Gvbase=vGbase,
-                    q=-qpt,
-                    kptjs=kpts[kjs],
+                    gxyz=grid,
+                    qpt=-qpt,
+                    kpts=kpts[kjs],
+                    aosym="s2",
                 )
                 G_ao = G_ao.reshape(-1, ngrids, self.nao_pair)
                 logger.debug1(self, "Norm of FT for AO cell: %.6g", np.linalg.norm(G_ao))
