@@ -3,14 +3,11 @@
 Ref: J. Chem. Phys. 147, 164119 (2017)
 """
 
-import copy
-import ctypes
-
+import ctype
 import numpy as np
 import scipy.linalg
 from pyscf import lib
 from pyscf.agf2 import mpi_helper
-from pyscf.ao2mo.outcore import balance_partition
 from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
 from pyscf.pbc.df.ft_ao import ft_ao
@@ -18,7 +15,6 @@ from pyscf.pbc.df.gdf_builder import _guess_eta, auxbar, estimate_ke_cutoff_for_
 from pyscf.pbc.df.incore import aux_e2
 from pyscf.pbc.df.rsdf_builder import _estimate_meshz
 from pyscf.pbc.tools import pbc
-from pyscf.scf import _vhf
 
 from gdf.base import BaseGDF
 from gdf.cell import fuse_auxcell_chgcell, make_auxcell, make_chgcell
@@ -119,7 +115,7 @@ class CCGDF(BaseGDF):
 
         int2c2e = list(fused_cell.pbc_intor("int2c2e", hermi=0, kpts=-qpts._kpts))
 
-        cput1 = logger.timer(self, "bare 2c2e", *cput0)
+        logger.timer(self, "bare 2c2e", *cput0)
 
         return int2c2e
 
@@ -170,7 +166,6 @@ class CCGDF(BaseGDF):
 
         # Get the G vectors
         vG, vGbase, _ = fused_cell.get_Gv_weights(mesh)
-        ngrids = vG.shape[0]
         grid = lib.cartesian_prod([np.arange(len(x)) for x in vGbase])
         reciprocal_vectors = fused_cell.reciprocal_vectors()
 
@@ -273,7 +268,6 @@ class CCGDF(BaseGDF):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
         ngrids = fused_cell.nao_nr()
-        aux_loc = fused_cell.ao_loc_nr(fused_cell.cart)
 
         # Get the k-point pairs
         # TODO can we exploit symmetry here?
@@ -292,11 +286,11 @@ class CCGDF(BaseGDF):
             kptij_lst=kpt_pairs,
         )
         int3c2e_part = lib.transpose(int3c2e_part, axes=(0, 2, 1))
-        int3c2e_part = int3c2e_part.reshape(-1, ngrids, self.nao_pair)
 
         # Fill the array
         for k, (ki, kj) in enumerate(policy):
             int3c2e[ki, kj] = int3c2e_part[k]
+            print(ki, kj, lib.fp(int3c2e[ki, kj]))
 
         logger.timer_debug1(self, "int3c2e", *cput0)
 
@@ -345,7 +339,6 @@ class CCGDF(BaseGDF):
 
         # Get the G vectors
         vG, vGbase, _ = fused_cell.get_Gv_weights(mesh)
-        ngrids = np.prod(mesh)
         grid = lib.cartesian_prod([np.arange(len(x)) for x in vGbase])
         reciprocal_vectors = self.cell.reciprocal_vectors()
 
@@ -369,24 +362,33 @@ class CCGDF(BaseGDF):
             # respectively. This index can then be used to swap the
             # corresponding k-points and the sign of the q-point.
             for time_reversal in range((not conj[q]) + 1):
-                kis = [tup[time_reversal] for tup in qpt_idx[q]]
-                kjs = [tup[1 - time_reversal] for tup in qpt_idx[q]]
+                kis = np.array([tup[time_reversal] for tup in qpt_idx[q]])
+                kjs = np.array([tup[1 - time_reversal] for tup in qpt_idx[q]])
                 qpt = qpts[q] if time_reversal == 0 else -qpts[q]
                 if time_reversal:
+                    # We'll only need this one more time, so just conj
+                    # it in-place
                     j2c_chol = j2c_chol.conj()
 
-                # If this q-point won't contribute to the required
-                # integrals on this rank, skip it
-                if not policy.intersection({*zip(kis, kjs), *zip(kjs, kis)}):
+                # Get the k-point pair indices that are needed for this
+                # rank, others can be skipped
+                policy_inds = [
+                    i
+                    for i, (ki, kj) in enumerate(zip(kis, kjs))
+                    if (ki, kj) in policy or (kj, ki) in policy
+                ]
+
+                # If this q-point won't contribute at all to the
+                # required integrals on this rank, skip it
+                if not policy_inds:
                     continue
 
                 # Eq. 33
-                # TODO MPI
-                shls_slice = (auxcell.nbas, fused_cell.nbas)
+                # TODO better MPI - precalculate?
                 G_chg = ft_ao(
                     fused_cell,
                     vG,
-                    shls_slice=shls_slice,
+                    shls_slice=(auxcell.nbas, fused_cell.nbas),
                     b=reciprocal_vectors,
                     gxyz=grid,
                     Gvbase=vGbase,
@@ -399,30 +401,24 @@ class CCGDF(BaseGDF):
                 if qpts.is_zero(qpt):
                     logger.debug(self, "Including net charge of AO products")
                     vbar = fuse(auxbar(fused_cell))
-                    ovlp = self.cell.pbc_intor("int1e_ovlp", hermi=0, kpts=kpts[kis])
+                    ovlp = self.cell.pbc_intor("int1e_ovlp", hermi=0, kpts=kpts[kis[policy_inds]])
                     ovlp = [lib.pack_tril(s) for s in ovlp]
 
                 # Eq. 24
-                # TODO MPI
                 G_ao = ft_aopair_kpts(
                     vG,
                     Gvbase=vGbase,
                     gxyz=grid,
                     qpt=-qpt,
-                    kpts=kpts[kjs],
+                    kpts=kpts[kjs[policy_inds]],
                     aosym="s2",
                 )
-                G_ao = G_ao.reshape(-1, ngrids, self.nao_pair)
                 logger.debug1(self, "Norm of FT for AO cell: %.6g", np.linalg.norm(G_ao))
 
-                for i, (ki, kj) in enumerate(zip(kis, kjs)):
-                    # If this k-point pair won't contribute to the
-                    # required integrals on this rank, skip it
-                    if (ki, kj) not in policy and (kj, ki) not in policy:
-                        continue
-
-                    # Eq. 31, first term
-                    v = int3c2e[ki, kj].copy()
+                for i, (ki, kj) in enumerate(zip(kis[policy_inds], kjs[policy_inds])):
+                    # Eq. 31, first term - note that we don't copy,
+                    # but this array isn't needed anywhere else
+                    v = int3c2e[ki, kj]
 
                     # Eq. 31, second term
                     if qpts.is_zero(qpt):
@@ -438,12 +434,22 @@ class CCGDF(BaseGDF):
                     # Eq. 29
                     v = np.dot(j2c_chol, v)
 
-                    j3c_tri[ki, kj] = v + j3c_tri.get((ki, kj), 0.0)
+                    # TODO DEBUG - remove
+                    if (ki, kj) in j3c_tri:
+                        raise ValueError("Oops")
+
+                    j3c_tri[ki, kj] = v
                     logger.debug(self, "Filled j3c for kpt [%d, %d]", ki, kj)
+
+                    # We don't need int3c2e[ki, kj] any more
+                    del int3c2e[ki, kj]
 
         # Unpack the three-center integrals
         j3c = {}
-        for ki, kj in policy:
+        while policy:
+            ki, kj = next(iter(policy))
+
+            # Build (Q|ij)
             out = np.zeros((naux, self.nao, self.nao), dtype=np.complex128)
             libpbc.PBCunpack_tril_triu(
                 out.ctypes.data_as(ctypes.c_void_p),
@@ -453,6 +459,26 @@ class CCGDF(BaseGDF):
                 ctypes.c_int(self.nao),
             )
             j3c[ki, kj] = out
+            policy.remove((ki, kj))
+
+            # Build (Q|ji)
+            if ki != kj and (kj, ki) in policy:
+                # TODO can we combine these?
+                out = np.zeros((naux, self.nao, self.nao), dtype=np.complex128)
+                libpbc.PBCunpack_tril_triu(
+                    out.ctypes.data_as(ctypes.c_void_p),
+                    j3c_tri[kj, ki].ctypes.data_as(ctypes.c_void_p),
+                    j3c_tri[ki, kj].ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(naux),
+                    ctypes.c_int(self.nao),
+                )
+                j3c[kj, ki] = out
+                policy.remove((kj, ki))
+
+            # We don't need j3c_tri[ki, kj] or j3c_tri[kj, ki] any more
+            del j3c_tri[ki, kj]
+            if (kj, ki) in policy:
+                del j3c_tri[kj, ki]
 
         logger.timer(self, "j3c", *cput0)
 

@@ -86,6 +86,9 @@ def gen_ft_kernel(
     fdrv = getattr(libpbc, f"PBC_ft_bvk_drv")
     cintor = getattr(libpbc, supmol.rs_cell._add_suffix(intor))
 
+    # TODO from pyscf comments:
+    # use Gv = b * gxyz + q in c code
+    # add zfill
     def ft_kernel(
         Gv,
         gxyz=None,
