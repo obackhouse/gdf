@@ -13,7 +13,6 @@ from pyscf.pbc.df.ft_ao import (
     _RangeSeparatedCell,
     estimate_rcut,
 )
-from pyscf.pbc.tools import k2gamma
 
 libpbc = lib.load_library("libpbc")
 
@@ -65,7 +64,6 @@ def gen_ft_kernel(
     """
 
     log = logger.new_logger(supmol)
-    cput0 = (logger.process_clock(), logger.perf_counter())
 
     # Get number of a basis functions in original cell
     nbasp = supmol.rs_cell.ref_cell.nbas
@@ -83,7 +81,7 @@ def gen_ft_kernel(
     reciprocal_vectors = supmol.rs_cell.reciprocal_vectors()
     orth = np.allclose(reciprocal_vectors, np.diag(np.diag(reciprocal_vectors)))
     eval_gz = getattr(libpbc, f"GTO_Gv_{'non' if not orth else ''}orth")
-    fdrv = getattr(libpbc, f"PBC_ft_bvk_drv")
+    fdrv = libpbc.PBC_ft_bvk_drv
     cintor = getattr(libpbc, supmol.rs_cell._add_suffix(intor))
 
     # TODO from pyscf comments:
