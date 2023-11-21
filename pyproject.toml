@@ -61,7 +61,7 @@ include = "gdf"
 exclude = """
 /(
     | gdf/__pycache__
-    | gdf/lib/
+    | gdf/lib
     | .git
 )/
 """
