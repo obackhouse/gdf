@@ -1,0 +1,13 @@
+# Metadata
+include MANIFEST.in
+include README.md pyproject.toml setup.py LICENSE
+
+# Python byte code
+global-exclude *.py[cod]
+
+# C source files
+recursive-include gdf/lib *.c *.h CMakeLists.txt
+
+# Shared libraries
+include gdf/lib/*.so
+include gdf/lib/*.dylib
