@@ -69,6 +69,18 @@ class TestCCGDF(unittest.TestCase):
 
             self.assertAlmostEqual(np.max(np.abs(eri1 - eri2)), 0, 8)
 
+    def test_get_jk(self):
+        dm = np.random.random((self.df.nkpts, self.df.nao, self.df.nao))
+        dm = dm + np.random.random((self.df.nkpts, self.df.nao, self.df.nao)) * 1.0j
+        dm = dm + dm.swapaxes(1, 2).conj()
+
+        j1, k1 = self.df_ref.get_jk(dm)
+        j2, k2 = self.df.get_jk(dm)
+
+        self.assertAlmostEqual(np.max(np.abs(j1 - j2)), 0, 8)
+        self.assertAlmostEqual(np.max(np.abs(k1 - k2)), 0, 8)
+
+
 
 if __name__ == "__main__":
     unittest.main()

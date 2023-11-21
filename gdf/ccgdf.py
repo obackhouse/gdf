@@ -287,6 +287,10 @@ class CCGDF(BaseGDF):
         )
         int3c2e_part = lib.transpose(int3c2e_part, axes=(0, 2, 1))
 
+        # Will be missing an index if we have a single k-point
+        int3c2e_part = int3c2e_part.reshape(-1, ngrids, self.nao_pair)
+        int3c2e_part = int3c2e_part.astype(np.complex128)
+
         # Fill the array
         for k, (ki, kj) in enumerate(policy):
             int3c2e[ki, kj] = int3c2e_part[k]
@@ -422,7 +426,8 @@ class CCGDF(BaseGDF):
                     # Eq. 31, second term
                     if qpts.is_zero(qpt):
                         mask = np.where(vbar != 0)[0]
-                        v[mask] -= lib.einsum("i,j->ij", vbar[mask], ovlp[i])
+                        if np.any(mask):
+                            v[mask] -= lib.einsum("i,j->ij", vbar[mask], ovlp[i])
 
                     # Eq. 31, third term
                     v[naux:] -= np.dot(G_chg.T.conj(), G_ao[i])

@@ -2,12 +2,16 @@
 """
 
 import numpy as np
+from functools import lru_cache
 from pyscf import lib
 from pyscf.agf2 import mpi_helper
 from pyscf.lib import logger
+from pyscf.pbc import tools
 from pyscf.pbc.lib import kpts_helper
+from pyscf.pbc.df.df import DF as _DF
 
 from gdf.kpts import KPoints
+from gdf.lib import cderi_jk
 
 
 def needs_cderi(func):
@@ -78,6 +82,9 @@ class BaseGDF(lib.StreamObject):
         self.stdout = cell.stdout
         self.verbose = cell.verbose
 
+        # Attributes:
+        self._cderi = None
+
     def _build(self):
         """
         Hook for subclasses to build the density fitting integrals.
@@ -99,6 +106,7 @@ class BaseGDF(lib.StreamObject):
         return self
 
     def dump_flags(self, verbose=None):
+        """Dump flags to the logger."""
         log = logger.new_logger(self, verbose)
         log.info("\n******** %s ********", self.__class__)
         log.info("auxbasis = %s", self.auxbasis)
@@ -106,6 +114,12 @@ class BaseGDF(lib.StreamObject):
         log.info("linear_dep_threshold = %s", self.linear_dep_threshold)
         log.info("len(kpts) = %s", len(self.kpts))
         log.debug1("kpts = %s", self.kpts)
+
+    def reset(self, cell=None):
+        """Reset the object."""
+        if cell is not None:
+            self.cell = cell
+        self._cderi = None
 
     @needs_cderi
     def sr_loop(
@@ -254,6 +268,101 @@ class BaseGDF(lib.StreamObject):
 
         return tuple(out)
 
+    def get_jk(
+        self,
+        dm,
+        with_j=True,
+        with_k=True,
+        exxdiv=None,
+        # Compatibility options:
+        hermi=1,
+        kpts=None,
+        kpts_band=None,
+        omega=None,
+    ):
+        """
+        Build the J (Coulomb) and K (exchange) contributions to the Fock
+        matrix due to a given density matrix.
+
+        Parameters
+        ----------
+        dm : numpy.ndarray
+            Density matrices at each k-point.
+        with_j : bool, optional
+            Whether to compute the Coulomb matrix. Default value is
+            `True`.
+        with_k : bool, optional
+            Whether to compute the exchange matrix. Default value is
+            `True`.
+        exxdiv : str, optional
+            Exchange divergence treatment. Default value is `None`.
+
+        Returns
+        -------
+        vj : numpy.ndarray
+            Coulomb matrix, if `with_j` is `True`.
+        vk : numpy.ndarray
+            Exchange matrix, if `with_k` is `True`.
+        """
+
+        if hermi != 1 or kpts_band is not None or omega is not None:
+            raise ValueError(
+                f"{self.__class__.__name__}.get_jk only supports the `hermi=1`, "
+                "`kpts_band=None`, and `omega=None` arguments."
+            )
+        if kpts is not None and KPoints(self.cell, kpts) != self.kpts:
+            raise ValueError(
+                f"{self.__class__.__name__}.get_jk only supports the `kpts` argument "
+                f"if it matches the k-points of the {self.__class__.__name__} object."
+            )
+
+        nkpts = len(self.kpts)
+        nao = self.cell.nao_nr()
+        naux = self.get_naoaux()
+
+        dms = dm.reshape(-1, nkpts, nao, nao)
+        ndm = dms.shape[0]
+        vj = vk = None
+
+        policy = self.mpi_policy()
+        policy_eq = {ki for ki, kj in policy if ki == kj}
+
+        if with_j:
+            vj = np.zeros((ndm, nkpts, nao, nao), dtype=np.complex128)
+        if with_k:
+            vk = np.zeros((ndm, nkpts, nao, nao), dtype=np.complex128)
+
+        for i in range(ndm):
+            # J matrix
+            if with_j:
+                tmp = np.zeros((naux,), dtype=np.complex128)
+                for ki in policy_eq:
+                    tmp += lib.einsum("Lpq,pq->L", self._cderi[ki, ki], dms[i, ki].conj())
+                for ki in policy_eq:
+                    vj[i, ki] += lib.einsum("L,Lrs->rs", tmp, self._cderi[ki, ki])
+
+            # K matrix
+            if with_k:
+                for ki, kj in policy:
+                    tmp = lib.einsum("Lrp,pq->rLq", self._cderi[kj, ki], dms[i, ki])
+                    vk[i, kj] += lib.einsum("rLq,Lqs->rs", tmp, self._cderi[ki, kj])
+
+        vj = mpi_helper.allreduce(vj) / nkpts
+        vk = mpi_helper.allreduce(vk) / nkpts
+
+        # Exchange divergence treatment
+        if with_k and exxdiv == "ewald":
+            s = self.get_ovlp()
+            madelung = self.madelung
+            for i in range(ndm):
+                for ki in self.kpts.loop(1):
+                    vk[i, ki] += madelung * np.linalg.multi_dot((s[ki], dms[i, ki], s[ki]))
+
+        vj = vj.reshape(dm.shape)
+        vk = vk.reshape(dm.shape)
+
+        return vj, vk
+
     def get_naoaux(self):
         """Get the maximum number of auxiliary basis functions."""
         return max(v.shape[0] for v in self._cderi.values())
@@ -279,9 +388,40 @@ class BaseGDF(lib.StreamObject):
         return self.get_naoaux()
 
     @property
+    def nkpts(self):
+        """Number of k-points."""
+        return len(self.kpts)
+
+    @property
     def direct_scf_tol(self):
         """Direct SCF tolerance, to appease PySCF API."""
         exp_min = np.min(np.hstack(self.cell.bas_exps()))
         lattice_sum_factor = max((2 * self.cell.rcut) ** 3 / self.cell.vol / exp_min, 1)
         cutoff = self.cell.precision / lattice_sum_factor * 0.1
         return cutoff
+
+    @lru_cache(maxsize=1)
+    def get_nuc(self, kpts=None):
+        """Get the nuclear repulsion energy."""
+        # TODO MPI?
+        if kpts is None:
+            kpts = self.kpts._kpts
+        return _DF.get_nuc(self, kpts=kpts)
+
+    @lru_cache(maxsize=1)
+    def get_pp(self, kpts=None):
+        """Get the pseudopotential."""
+        # TODO MPI?
+        if kpts is None:
+            kpts = self.kpts._kpts
+        return _DF.get_pp(self, kpts=kpts)
+
+    @lru_cache(maxsize=1)
+    def get_ovlp(self):
+        return self.cell.pbc_intor("int1e_ovlp", hermi=1, kpts=self.kpts._kpts)
+
+    @property
+    @lru_cache(maxsize=1)
+    def madelung(self):
+        """Get the Madelung constant."""
+        return tools.pbc.madelung(self.cell, self.kpts._kpts)
