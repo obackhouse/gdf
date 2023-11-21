@@ -89,7 +89,10 @@ class BaseGDF(lib.StreamObject):
         """
         Hook for subclasses to build the density fitting integrals.
         Return value should be the 3-center array of integrals in the
-        AO basis for each k-point pair, as a dictionary.
+        AO basis for each k-point pair in `self.mpi_policy()`.
+
+        This internal representation ensures optimal caching for C
+        routines.
         """
         raise NotImplementedError
 
@@ -173,6 +176,8 @@ class BaseGDF(lib.StreamObject):
             contribution.
         """
 
+        # TODO MPI stuff
+
         # Get the k-point indices
         ki, kj = kpti_kptj
         if not isinstance(ki, int):
@@ -180,6 +185,7 @@ class BaseGDF(lib.StreamObject):
         if not isinstance(kj, int):
             kj = self.kpts.index(self.kpts.wrap_around(kj))
         qpt = self.kpts.wrap_around(self.kpts[ki] - self.kpts[kj])
+        idx = self.mpi_policy()[ki, kj]
 
         if blksize is None:
             blksize = self.naux
@@ -187,7 +193,7 @@ class BaseGDF(lib.StreamObject):
             aux_slice = (0, self.naux)
 
         for p0, p1 in lib.prange(*aux_slice, blksize):
-            Lpq = self._cderi[ki, kj][p0:p1]
+            Lpq = self._cderi[idx][p0:p1]
             LpqR = Lpq.real
             LpqI = Lpq.imag
             if compact and self.kpts.is_zero(qpt):
@@ -205,17 +211,23 @@ class BaseGDF(lib.StreamObject):
 
         Returns
         -------
-        policy : set of tuple of int
-            List of k-point pairs to compute integrals for.
+        policy : dict of (tuple of int, int)
+            Dictionary whose keys are the k-point pairs to compute
+            integrals for, and values the indices in the array on that
+            rank for the given pair.
         """
 
         i = 0
-        policy = set()
+        idx = 0
+        policy = {}
         for ki in self.kpts.loop(1):
             for kj in range(ki + 1):
                 if i % mpi_helper.size == mpi_helper.rank:
-                    policy.add((ki, kj))
-                    policy.add((kj, ki))
+                    policy[ki, kj] = idx
+                    idx += 1
+                    if ki != kj:
+                        policy[kj, ki] = idx
+                        idx += 1
                 i += 1
 
         return policy
@@ -325,7 +337,6 @@ class BaseGDF(lib.StreamObject):
         vj = vk = None
 
         policy = self.mpi_policy()
-        policy_eq = {ki for ki, kj in policy if ki == kj}
 
         if with_j:
             vj = np.zeros((ndm, nkpts, nao, nao), dtype=np.complex128)
@@ -336,16 +347,19 @@ class BaseGDF(lib.StreamObject):
             # J matrix
             if with_j:
                 tmp = np.zeros((naux,), dtype=np.complex128)
-                for ki in policy_eq:
-                    tmp += lib.einsum("Lpq,pq->L", self._cderi[ki, ki], dms[i, ki].conj())
-                for ki in policy_eq:
-                    vj[i, ki] += lib.einsum("L,Lrs->rs", tmp, self._cderi[ki, ki])
+                for (ki, kj), idx in policy.items():
+                    if ki == kj:
+                        tmp += lib.einsum("Lpq,pq->L", self._cderi[idx], dms[i, ki].conj())
+                for (ki, kj), idx in policy.items():
+                    if ki == kj:
+                        vj[i, ki] += lib.einsum("L,Lrs->rs", tmp, self._cderi[idx])
 
             # K matrix
             if with_k:
-                for ki, kj in policy:
-                    tmp = lib.einsum("Lrp,pq->rLq", self._cderi[kj, ki], dms[i, ki])
-                    vk[i, kj] += lib.einsum("rLq,Lqs->rs", tmp, self._cderi[ki, kj])
+                for (ki, kj), idx in policy.items():
+                    idx_flip = policy[kj, ki]
+                    tmp = lib.einsum("Lrp,pq->rLq", self._cderi[idx_flip], dms[i, ki])
+                    vk[i, kj] += lib.einsum("rLq,Lqs->rs", tmp, self._cderi[idx])
 
         vj = mpi_helper.allreduce(vj) / nkpts
         vk = mpi_helper.allreduce(vk) / nkpts
@@ -365,7 +379,7 @@ class BaseGDF(lib.StreamObject):
 
     def get_naoaux(self):
         """Get the maximum number of auxiliary basis functions."""
-        return max(v.shape[0] for v in self._cderi.values())
+        return self._cderi.shape[1]
 
     @property
     def kpts_band(self):

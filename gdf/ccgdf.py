@@ -272,28 +272,24 @@ class CCGDF(BaseGDF):
         # Get the k-point pairs
         # TODO can we exploit symmetry here?
         policy = self.mpi_policy()
-        kpt_pairs = np.array([(self.kpts[ki], self.kpts[kj]) for ki, kj in policy])
-
-        # Initialise arrays
-        int3c2e = {idx: np.zeros((ngrids, self.nao_pair), dtype=np.complex128) for idx in policy}
+        kpt_pairs = [None] * len(policy)
+        for (ki, kj), idx in policy.items():
+            kpt_pairs[idx] = (self.kpts[ki], self.kpts[kj])
+        kpt_pairs = np.array(kpt_pairs)
 
         # Construct the integral
-        int3c2e_part = aux_e2(
+        int3c2e = aux_e2(
             self.cell,
             fused_cell,
             "int3c2e",
             aosym="s2",
             kptij_lst=kpt_pairs,
         )
-        int3c2e_part = lib.transpose(int3c2e_part, axes=(0, 2, 1))
+        int3c2e = lib.transpose(int3c2e, axes=(0, 2, 1))
 
         # Will be missing an index if we have a single k-point
-        int3c2e_part = int3c2e_part.reshape(-1, ngrids, self.nao_pair)
-        int3c2e_part = int3c2e_part.astype(np.complex128)
-
-        # Fill the array
-        for k, (ki, kj) in enumerate(policy):
-            int3c2e[ki, kj] = int3c2e_part[k]
+        int3c2e = int3c2e.reshape(-1, ngrids, self.nao_pair)
+        int3c2e = int3c2e.astype(np.complex128)
 
         logger.timer_debug1(self, "int3c2e", *cput0)
 
@@ -421,7 +417,7 @@ class CCGDF(BaseGDF):
                 for i, (ki, kj) in enumerate(zip(kis[policy_inds], kjs[policy_inds])):
                     # Eq. 31, first term - note that we don't copy,
                     # but this array isn't needed anywhere else
-                    v = int3c2e[ki, kj]
+                    v = int3c2e[policy[ki, kj]]
 
                     # Eq. 31, second term
                     if qpts.is_zero(qpt):
@@ -445,39 +441,37 @@ class CCGDF(BaseGDF):
                     j3c_tri[ki, kj] = v
                     logger.debug(self, "Filled j3c for kpt [%d, %d]", ki, kj)
 
-                    # We don't need int3c2e[ki, kj] any more
-                    del int3c2e[ki, kj]
+        # We don't need the bare 3c2e integrals anymore
+        del int3c2e
 
         # Unpack the three-center integrals
-        j3c = {}
+        j3c = np.zeros((len(policy), naux, self.nao, self.nao), dtype=np.complex128)
         while policy:
             ki, kj = next(iter(policy))
 
             # Build (Q|ij)
-            out = np.zeros((naux, self.nao, self.nao), dtype=np.complex128)
+            idx = policy[ki, kj]
             libpbc.PBCunpack_tril_triu(
-                out.ctypes.data_as(ctypes.c_void_p),
+                j3c[idx].ctypes.data_as(ctypes.c_void_p),
                 j3c_tri[ki, kj].ctypes.data_as(ctypes.c_void_p),
                 j3c_tri[kj, ki].ctypes.data_as(ctypes.c_void_p),
                 ctypes.c_int(naux),
                 ctypes.c_int(self.nao),
             )
-            j3c[ki, kj] = out
-            policy.remove((ki, kj))
+            policy.pop((ki, kj))
 
             # Build (Q|ji)
             if ki != kj and (kj, ki) in policy:
                 # TODO can we combine these?
-                out = np.zeros((naux, self.nao, self.nao), dtype=np.complex128)
+                idx = policy[kj, ki]
                 libpbc.PBCunpack_tril_triu(
-                    out.ctypes.data_as(ctypes.c_void_p),
+                    j3c[idx].ctypes.data_as(ctypes.c_void_p),
                     j3c_tri[kj, ki].ctypes.data_as(ctypes.c_void_p),
                     j3c_tri[ki, kj].ctypes.data_as(ctypes.c_void_p),
                     ctypes.c_int(naux),
                     ctypes.c_int(self.nao),
                 )
-                j3c[kj, ki] = out
-                policy.remove((kj, ki))
+                policy.pop((kj, ki))
 
             # We don't need j3c_tri[ki, kj] or j3c_tri[kj, ki] any more
             del j3c_tri[ki, kj]
