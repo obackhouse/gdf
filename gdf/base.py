@@ -4,6 +4,7 @@
 from functools import lru_cache
 
 import numpy as np
+import scipy.linalg
 from pyscf import lib
 from pyscf.agf2 import mpi_helper
 from pyscf.lib import logger
@@ -105,6 +106,7 @@ class BaseGDF(lib.StreamObject):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
         self._cderi = self._build()
+        self._cderi = np.asarray(self._cderi, order="C")
         logger.timer_debug1(self, "build", *cput0)
 
         return self
@@ -135,7 +137,9 @@ class BaseGDF(lib.StreamObject):
         aux_slice=None,
     ):
         r"""
-        Loop over density fitting integrals for a pair of k-points.
+        Loop over density fitting integrals for a pair of k-points. This
+        function is not recommended for generaluse, but is an important
+        part of the interface for PySCF.
 
         Parameters
         ----------
@@ -177,8 +181,6 @@ class BaseGDF(lib.StreamObject):
             contribution.
         """
 
-        # TODO MPI stuff
-
         # Get the k-point indices
         ki, kj = kpti_kptj
         if not isinstance(ki, int):
@@ -186,13 +188,21 @@ class BaseGDF(lib.StreamObject):
         if not isinstance(kj, int):
             kj = self.kpts.index(self.kpts.wrap_around(kj))
         qpt = self.kpts.wrap_around(self.kpts[ki] - self.kpts[kj])
-        idx = self.mpi_policy()[ki, kj]
 
+        # Check if this rank has the integral
+        policy = self.mpi_policy()
+        if (ki, kj) not in policy:
+            yield None, None, 0
+            return
+        idx = policy[ki, kj]
+
+        # Get the auxiliary slice and block size
         if blksize is None:
             blksize = self.naux
         if aux_slice is None:
             aux_slice = (0, self.naux)
 
+        # Loop over the auxiliary basis
         for p0, p1 in lib.prange(*aux_slice, blksize):
             Lpq = self._cderi[idx][p0:p1]
             LpqR = Lpq.real
@@ -281,6 +291,7 @@ class BaseGDF(lib.StreamObject):
 
         return tuple(out)
 
+    @needs_cderi
     def get_jk(
         self,
         dm,
@@ -318,6 +329,7 @@ class BaseGDF(lib.StreamObject):
             Exchange matrix, if `with_k` is `True`.
         """
 
+        # Check compatibility options
         if hermi != 1 or kpts_band is not None or omega is not None:
             raise ValueError(
                 f"{self.__class__.__name__}.get_jk only supports the `hermi=1`, "
@@ -329,16 +341,18 @@ class BaseGDF(lib.StreamObject):
                 f"if it matches the k-points of the {self.__class__.__name__} object."
             )
 
+        # Get the sizes
         nkpts = len(self.kpts)
         nao = self.cell.nao_nr()
-        naux = self.get_naoaux()
-
-        dms = dm.reshape(-1, nkpts, nao, nao)
-        ndm = dms.shape[0]
-        vj = vk = None
-
+        naux = self.get_naoaux(rank_max=True)
         policy = self.mpi_policy()
 
+        # Reshape the density matrix
+        dms = dm.reshape(-1, nkpts, nao, nao)
+        ndm = dms.shape[0]
+
+        # Initialise arrays
+        vj = vk = None
         if with_j:
             vj = np.zeros((ndm, nkpts, nao, nao), dtype=np.complex128)
         if with_k:
@@ -348,12 +362,36 @@ class BaseGDF(lib.StreamObject):
             # J matrix
             if with_j:
                 tmp = np.zeros((naux,), dtype=np.complex128)
+
                 for (ki, kj), idx in policy.items():
                     if ki == kj:
-                        tmp += lib.einsum("Lpq,pq->L", self._cderi[idx], dms[i, ki].conj())
+                        # cderi(L, p, q) D(p, q) -> tmp(L)
+                        scipy.linalg.blas.zgemv(
+                            a=self._cderi[idx].reshape(naux, nao * nao),
+                            x=dms[i, ki].ravel().conj(),
+                            y=tmp,
+                            alpha=1.0,
+                            beta=1.0,
+                            overwrite_y=True,
+                        )
+
+                tmp = mpi_helper.allreduce(tmp)
+
                 for (ki, kj), idx in policy.items():
                     if ki == kj:
-                        vj[i, ki] += lib.einsum("L,Lrs->rs", tmp, self._cderi[idx])
+                        # tmp(L) cderi(L, p, q) -> vj(p, q)
+                        scipy.linalg.blas.zgemv(
+                            a=self._cderi[idx].reshape(naux, nao * nao),
+                            x=tmp,
+                            y=vj[i, ki].ravel(),
+                            alpha=1.0,
+                            beta=1.0,
+                            trans=True,
+                            overwrite_y=True,
+                        )
+
+                vj = mpi_helper.allreduce(vj)
+                vj /= nkpts
 
             # K matrix
             if with_k:
@@ -362,8 +400,8 @@ class BaseGDF(lib.StreamObject):
                     tmp = lib.einsum("Lrp,pq->rLq", self._cderi[idx_flip], dms[i, ki])
                     vk[i, kj] += lib.einsum("rLq,Lqs->rs", tmp, self._cderi[idx])
 
-        vj = mpi_helper.allreduce(vj) / nkpts
-        vk = mpi_helper.allreduce(vk) / nkpts
+                vk = mpi_helper.allreduce(vk)
+                vk /= nkpts
 
         # Exchange divergence treatment
         if with_k and exxdiv == "ewald":
@@ -378,8 +416,11 @@ class BaseGDF(lib.StreamObject):
 
         return vj, vk
 
-    def get_naoaux(self):
+    #@needs_cderi
+    def get_naoaux(self, rank_max=False):
         """Get the maximum number of auxiliary basis functions."""
+        if rank_max:
+            return mpi_helper.allreduce(self._cderi.shape[1], op=mpi_helper.mpi.MAX)
         return self._cderi.shape[1]
 
     @property

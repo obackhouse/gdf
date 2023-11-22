@@ -73,6 +73,7 @@ class TestCCGDF(unittest.TestCase):
         dm = np.random.random((self.df.nkpts, self.df.nao, self.df.nao))
         dm = dm + np.random.random((self.df.nkpts, self.df.nao, self.df.nao)) * 1.0j
         dm = dm + dm.swapaxes(1, 2).conj()
+        dm = mpi_helper.allreduce(dm) / self.df.nkpts
 
         j1, k1 = self.df_ref.get_jk(dm)
         j2, k2 = self.df.get_jk(dm)
