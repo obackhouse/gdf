@@ -6,6 +6,7 @@
 #include<stdlib.h>
 #include<stdint.h>
 #include<stdbool.h>
+#include<stdio.h>
 #include<complex.h>
 #include<omp.h>
 #include "cblas.h"
@@ -41,13 +42,17 @@ int64_t transpose_102(
 
 
 /*
- *  Compute J (Coulomb) and K (exchange) matrices for k-point sampled
- *  integrals and density matrices:
+ *  Compute K (exchange) matrix for k-point sampled integrals and
+ *  density matrices:
  *
- *      J_{rs} = \sum_{L} \sum_{pq} (L|pq) (L|rs) D_{pq}
  *      K_{rs} = \sum_{L} \sum_{pq} (L|qs) (L|rp) D_{pq}
+ *
+ *  This function supports the computation of the density matrix for
+ *  a subset of k-point pairs.  The density matrix should be passed
+ *  at all k-points, and the output arrays will be filled for all
+ *  k-point indices that are present as the first index in the pairs.
  */
-int64_t cderi_jk(
+int64_t cderi_get_k(
     /* Input: */
     int64_t nk,             /* Number of k-points */
     int64_t nkij,           /* Number of k-points pairs */
@@ -58,19 +63,16 @@ int64_t cderi_jk(
     double complex *dm,     /* Density matrix (nk, nao, nao) */
     int64_t *kis,           /* Indices of first k-point in each pair */
     int64_t *kjs,           /* Indices of second k-point in each pair */
-    bool with_j,            /* Compute J matrix */
-    bool with_k,            /* Compute K matrix */
     /* Output: */
-    double complex *vj,      /* J matrix (nk, nao, nao) */
     double complex *vk)      /* K matrix (nk, nao, nao) */
 {
     int64_t ierr = 0;
-    if (!with_j && !with_k) return ierr;
 
     /* Allocate temporary variables */
     const int64_t l0 = naux_slice[0];
     const int64_t l1 = naux_slice[1];
     const int64_t K = nk;
+    const int64_t KP = nkij;
     const int64_t N = nao;
     const int64_t L = naux;
     const int64_t M = l1 - l0;
@@ -80,89 +82,58 @@ int64_t cderi_jk(
     const int64_t LN2 = L * N2;
     const int64_t MN2 = M * N2;
     const int64_t KN2 = K * N2;
-    const int64_t KLN2 = K * L * N2;
-    const int64_t I1 = 1;
     const double complex Z0 = 0.0;
     const double complex Z1 = 1.0;
 
-    /* Conjugate density matrix to avoid platform dependent CblasConjNoTrans */
-    double complex *dm_conj = calloc(KN2, sizeof(double complex));
-    for (size_t i = 0; i < KN2; i++) {
-        dm_conj[i] = conj(dm[i]);
+    /* Find map between (ki, kj) and index ij - hacky but scales fine */
+    int64_t *ij_map = calloc(K2, sizeof(int64_t));
+    for (size_t ij = 0; ij < KP; ij++) {
+        const size_t ki = kis[ij];
+        const size_t kj = kjs[ij];
+        ij_map[ki*K + kj] = ij;
     }
 
 #pragma omp parallel
     {
-        double complex *vj_priv, *vk_priv;
+        /* Allocate work arrays */
+        double complex *work1 = calloc(MN2, sizeof(double complex));
+        double complex *work2 = calloc(MN2, sizeof(double complex));
+        double complex *vk_priv = calloc(KN2, sizeof(double complex));
 
-        if (with_j) {
-            /* Allocate work arrays */
-            double complex *work1 = calloc(M, sizeof(double complex));
-            vj_priv = calloc(KN2, sizeof(double complex));
-
-            /* Build J matrix */
+        /* Build K matrix */
 #pragma omp for reduction(+:ierr)
-            for (size_t i = 0; i < K; i++) {
-                // cderi(i, i, l, p, q) dm(i, p, q)* -> work1(l)
-                cblas_zgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, I1, N2, &Z1,
-                            &(cderi[i*KLN2 + i*LN2 + l0*N2]), N2, &(dm_conj[i*N2]), I1, &Z0, work1, I1);
-            }
+        for (size_t ij = 0; ij < KP; ij++) {
+            const size_t ki = kis[ij];
+            const size_t kj = kjs[ij];
+            const size_t ji = ij_map[kj*K + ki];
 
-            for (size_t j = 0; j < K; j++) {
-                // work1(l) cderi(j, j, l, r, s) -> vj_priv(j, r, s)
-                cblas_zgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, I1, N2, M, &Z1,
-                            work1, M, &(cderi[j*KLN2 + j*LN2 + l0*N2]), N2, &Z1, &(vj_priv[j*N2]), N2);
-            }
+            /* cderi(j, i, l, r, p) dm(i, p, q) -> work1(l, r, q) */
+            cblas_zgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, MN, N, N, &Z1,
+                        &(cderi[ji*LN2 + l0*N2]), N, &(dm[ki*N2]), N, &Z0, work1, N);
 
-            /* Deallocate work arrays */
-            free(work1);
+            /* work1(l, r, q) -> work2(r, l, q) */
+            transpose_102(M, N, N, &(work1[0]), &(work2[0]));
+
+            /* work3(r, l, q) cderi(i, j, l, q, s) -> vk_priv(j, r, s) */
+            cblas_zgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, N, MN, &Z1,
+                        work2, MN, &(cderi[ij*LN2 + l0*N2]), N, &Z1, &(vk_priv[kj*N2]), N);
         }
 
-        if (with_k) {
-            /* Allocate work arrays */
-            double complex *work2 = calloc(MN2, sizeof(double complex));
-            double complex *work3 = calloc(MN2, sizeof(double complex));
-            vk_priv = calloc(KN2, sizeof(double complex));
-
-            /* Build K matrix */
-#pragma omp for reduction(+:ierr)
-            for (size_t ij = 0; ij < K2; ij++) {
-                size_t i = ij / K;
-                size_t j = ij % K;
-
-                // cderi(j, i, l, r, p) dm(i, p, q) -> work2(l, r, q)
-                cblas_zgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, MN, N, N, &Z1,
-                            &(cderi[j*KLN2 + i*LN2 + l0*N2]), N, &(dm[i*N2]), N, &Z0, work2, N);
-
-                // work2(l, r, q) -> work3(r, l, q)
-                transpose_102(M, N, N, &(work2[0]), &(work3[0]));
-
-                // work3(r, l, q) cderi(i, j, l, q, s) -> vk_priv(j, r, s)
-                cblas_zgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, N, MN, &Z1,
-                            work3, MN, &(cderi[i*KLN2 + j*LN2 + l0*N2]), N, &Z1, &(vk_priv[j*N2]), N);
-            }
-
-            /* Deallocate work arrays */
-            free(work2);
-            free(work3);
-        }
+        /* Deallocate work arrays */
+        free(work1);
+        free(work2);
 
         /* Accumulate J and K matrices */
 #pragma omp critical
         {
             for (size_t i = 0; i < KN2; i++) {
-                if (with_j) vj[i] += vj_priv[i] / K;
-                if (with_k) vk[i] += vk_priv[i] / K;
+                vk[i] += vk_priv[i] / K;
             }
         }
 
         /* Deallocate private work arrays */
-        if (with_j) free(vj_priv);
-        if (with_k) free(vk_priv);
+        free(vk_priv);
     }
-
-    /* Deallocate temporary variables */
-    free(dm_conj);
 
     return ierr;
 }

@@ -1,6 +1,7 @@
 """Base classes.
 """
 
+import ctypes
 from functools import lru_cache
 
 import numpy as np
@@ -12,8 +13,8 @@ from pyscf.pbc import tools
 from pyscf.pbc.df.df import DF as _DF
 from pyscf.pbc.lib import kpts_helper
 
+from gdf import lib as libgdf
 from gdf.kpts import KPoints
-from gdf.lib import cderi_jk
 
 
 def needs_cderi(func):
@@ -393,15 +394,38 @@ class BaseGDF(lib.StreamObject):
                 vj = mpi_helper.allreduce(vj)
                 vj /= nkpts
 
+                del tmp
+
             # K matrix
             if with_k:
-                for (ki, kj), idx in policy.items():
-                    idx_flip = policy[kj, ki]
-                    tmp = lib.einsum("Lrp,pq->rLq", self._cderi[idx_flip], dms[i, ki])
-                    vk[i, kj] += lib.einsum("rLq,Lqs->rs", tmp, self._cderi[idx])
+                kis = np.array([ki for ki, _ in policy])
+                kjs = np.array([kj for _, kj in policy])
+                aux_slice = np.array([0, naux])
+                libgdf.cderi_get_k(
+                    ctypes.c_int(nkpts),
+                    ctypes.c_int(len(policy)),
+                    ctypes.c_int(nao),
+                    ctypes.c_int(naux),
+                    aux_slice.ctypes.data_as(ctypes.c_void_p),
+                    self._cderi.ctypes.data_as(ctypes.c_void_p),
+                    dms[i].ctypes.data_as(ctypes.c_void_p),
+                    kis.ctypes.data_as(ctypes.c_void_p),
+                    kjs.ctypes.data_as(ctypes.c_void_p),
+                    vk[i].ctypes.data_as(ctypes.c_void_p),
+                )
+
+                # for (ki, kj), idx in policy.items():
+                #    idx_flip = policy[kj, ki]
+
+                #    # cderi(L, r, p) D(p, q) -> tmp(L, r, q)
+                #    tmp = lib.einsum("Lrp,pq->Lrq", self._cderi[idx_flip], dms[i, ki])
+
+                #    # tmp(L, r, q) -> tmp(r, L, q)
+                #    # tmp(r, L, q) cderi(L, q, s) -> vk(r, s)
+                #    vk[i, kj] += lib.einsum("Lrq,Lqs->rs", tmp, self._cderi[idx])
 
                 vk = mpi_helper.allreduce(vk)
-                vk /= nkpts
+                # vk /= nkpts
 
         # Exchange divergence treatment
         if with_k and exxdiv == "ewald":
@@ -416,7 +440,7 @@ class BaseGDF(lib.StreamObject):
 
         return vj, vk
 
-    #@needs_cderi
+    # @needs_cderi
     def get_naoaux(self, rank_max=False):
         """Get the maximum number of auxiliary basis functions."""
         if rank_max:
