@@ -444,7 +444,8 @@ class BaseGDF(lib.StreamObject):
     def get_naoaux(self, rank_max=False):
         """Get the maximum number of auxiliary basis functions."""
         if rank_max:
-            return mpi_helper.allreduce(self._cderi.shape[1], op=mpi_helper.mpi.MAX)
+            op = getattr(mpi_helper.mpi, "MAX", None)
+            return mpi_helper.allreduce(self._cderi.shape[1], op=op)
         return self._cderi.shape[1]
 
     @property
