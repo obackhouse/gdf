@@ -2,7 +2,6 @@
 """
 
 import ctypes
-from functools import lru_cache
 
 import numpy as np
 import scipy.linalg
@@ -15,6 +14,7 @@ from pyscf.pbc.lib import kpts_helper
 
 from gdf import lib as libgdf
 from gdf.kpts import KPoints
+from gdf.util import cache
 
 
 def needs_cderi(func):
@@ -296,14 +296,13 @@ class BaseGDF(lib.StreamObject):
     def get_jk(
         self,
         dm,
+        hermi=1,  # Compatibility
+        kpts=None,  # Compatibility
+        kpts_band=None,  # Compatibility
         with_j=True,
         with_k=True,
+        omega=None,  # Compatibility
         exxdiv=None,
-        # Compatibility options:
-        hermi=1,
-        kpts=None,
-        kpts_band=None,
-        omega=None,
     ):
         """
         Build the J (Coulomb) and K (exchange) contributions to the Fock
@@ -331,7 +330,7 @@ class BaseGDF(lib.StreamObject):
         """
 
         # Check compatibility options
-        if hermi != 1 or kpts_band is not None or omega is not None:
+        if int(hermi) != 1 or kpts_band is not None or omega is not None:
             raise ValueError(
                 f"{self.__class__.__name__}.get_jk only supports the `hermi=1`, "
                 "`kpts_band=None`, and `omega=None` arguments."
@@ -350,6 +349,7 @@ class BaseGDF(lib.StreamObject):
 
         # Reshape the density matrix
         dms = dm.reshape(-1, nkpts, nao, nao)
+        dms = dms.astype(np.complex128)
         ndm = dms.shape[0]
 
         # Initialise arrays
@@ -391,8 +391,8 @@ class BaseGDF(lib.StreamObject):
                             overwrite_y=True,
                         )
 
-                vj = mpi_helper.allreduce(vj)
                 vj /= nkpts
+                vj = mpi_helper.allreduce(vj)
 
                 del tmp
 
@@ -424,8 +424,8 @@ class BaseGDF(lib.StreamObject):
                 #    # tmp(r, L, q) cderi(L, q, s) -> vk(r, s)
                 #    vk[i, kj] += lib.einsum("Lrq,Lqs->rs", tmp, self._cderi[idx])
 
-                vk = mpi_helper.allreduce(vk)
                 # vk /= nkpts
+                vk = mpi_helper.allreduce(vk)
 
         # Exchange divergence treatment
         if with_k and exxdiv == "ewald":
@@ -472,15 +472,22 @@ class BaseGDF(lib.StreamObject):
         """Number of k-points."""
         return len(self.kpts)
 
+    # --- PySCF interface properties
+
     @property
     def direct_scf_tol(self):
-        """Direct SCF tolerance, to appease PySCF API."""
         exp_min = np.min(np.hstack(self.cell.bas_exps()))
         lattice_sum_factor = max((2 * self.cell.rcut) ** 3 / self.cell.vol / exp_min, 1)
         cutoff = self.cell.precision / lattice_sum_factor * 0.1
         return cutoff
 
-    @lru_cache(maxsize=1)
+    @property
+    def _prefer_ccdf(self):
+        return True
+
+    # --- Cached PySCF methods
+
+    @cache
     def get_nuc(self, kpts=None):
         """Get the nuclear repulsion energy."""
         # TODO MPI?
@@ -488,7 +495,7 @@ class BaseGDF(lib.StreamObject):
             kpts = self.kpts._kpts
         return _DF.get_nuc(self, kpts=kpts)
 
-    @lru_cache(maxsize=1)
+    @cache
     def get_pp(self, kpts=None):
         """Get the pseudopotential."""
         # TODO MPI?
@@ -496,12 +503,12 @@ class BaseGDF(lib.StreamObject):
             kpts = self.kpts._kpts
         return _DF.get_pp(self, kpts=kpts)
 
-    @lru_cache(maxsize=1)
+    @cache
     def get_ovlp(self):
         return self.cell.pbc_intor("int1e_ovlp", hermi=1, kpts=self.kpts._kpts)
 
     @property
-    @lru_cache(maxsize=1)
+    @cache
     def madelung(self):
         """Get the Madelung constant."""
         return tools.pbc.madelung(self.cell, self.kpts._kpts)

@@ -58,6 +58,9 @@ class KPoints:
         self.cell = cell
         self.tol = tol
 
+        if isinstance(kpts, self.__class__):
+            # Copy constructor
+            kpts = kpts._kpts
         if not isinstance(kpts, np.ndarray):
             # Might be a PySCF container
             kpts = kpts.kpts
@@ -138,6 +141,10 @@ class KPoints:
 
         return kpts
 
+    @staticmethod
+    def _hash_kpts(kpts, tol=1e-8):
+        return tuple(np.rint(kpts / tol).ravel().astype(int))
+
     @allow_single_kpt(output_is_kpts=False)
     def hash_kpts(self, kpts):
         """
@@ -153,7 +160,7 @@ class KPoints:
         hash_kpts : tuple
             Hashable representation of k-points.
         """
-        return tuple(np.rint(kpts / (self.tol)).ravel().astype(int))
+        return self._hash_kpts(kpts, tol=self.tol)
 
     @property
     def tol_decimals(self):
