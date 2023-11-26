@@ -128,6 +128,50 @@ class BaseGDF(lib.StreamObject):
             self.cell = cell
         self._cderi = None
 
+    def build_j2c_chol(self, j2c, q, threshold=None):
+        """
+        Get the inverse Cholesky factorization of the 2-center Coulomb
+        integral at a single q-point.
+
+        Parameters
+        ----------
+        j2c : list of ndarray
+            List of 2-center Coulomb integrals for each q-point.
+        q : int
+            Index of the q-point.
+        threshold : float, optional
+            Threshold for linear dependence. If `None`, use
+            `self.linear_dep_threshold`. Default value is `None`.
+
+        Returns
+        -------
+        j2c_chol : ndarray
+            Inverse Cholesky factorization of the 2-center Coulomb
+            integral.
+        """
+
+        if threshold is None:
+            threshold = self.linear_dep_threshold
+
+        w, v = scipy.linalg.eigh(j2c[q])
+
+        mask = w > threshold
+        w = w[mask]
+        v = v[:, mask]
+
+        # Inverse Cholesky decomposition
+        j2c_chol = np.dot(v * (w**-0.5)[None], v.T.conj())
+
+        logger.debug1(
+            self,
+            "j2c [%d] condition number: %.3g, dropped %d auxiliary functions",
+            q,
+            np.max(w) / np.min(w),
+            np.sum(~mask),
+        )
+
+        return j2c_chol
+
     @needs_cderi
     def sr_loop(
         self,

@@ -28,8 +28,9 @@ class CCGDF(BaseGDF):
     __doc__ = BaseGDF.__doc__.format(
         description="Charge-compensated Gaussian density fitting.",
         extra_attributes=(
-            "eta : float" "        Charge compensation parameter. If `None`, determine from",
-            "        `cell.precision`. Default value is `None`.",
+            "eta : float, optional\n"
+            "        Charge compensation parameter. If `None`, determine from\n",
+            "        `cell.precision`. Default value is `None`.\n",
         ),
     )
 
@@ -158,6 +159,7 @@ class CCGDF(BaseGDF):
 
         # The 2c2e integrals are sensitive to the mesh. Use a different
         # mesh here to achieve desired accuracy
+        # TODO keyword arguments
         mesh, eta, ke_cutoff = self.get_mesh_parameters(
             cell=auxcell,
             eta=eta,
@@ -180,6 +182,7 @@ class CCGDF(BaseGDF):
             # Eq. 32, first term
             v = int2c2e[q]
 
+            # Get the lattice sum
             G_chg = ft_ao(
                 fused_cell,
                 vG,
@@ -214,50 +217,6 @@ class CCGDF(BaseGDF):
 
         return j2c
 
-    def build_j2c_chol(self, j2c, q, threshold=None):
-        """
-        Get the inverse Cholesky factorization of the 2-center Coulomb
-        integral at a single q-point.
-
-        Parameters
-        ----------
-        j2c : list of ndarray
-            List of 2-center Coulomb integrals for each q-point.
-        q : int
-            Index of the q-point.
-        threshold : float, optional
-            Threshold for linear dependence. If `None`, use
-            `self.linear_dep_threshold`. Default value is `None`.
-
-        Returns
-        -------
-        j2c_chol : ndarray
-            Inverse Cholesky factorization of the 2-center Coulomb
-            integral.
-        """
-
-        if threshold is None:
-            threshold = self.linear_dep_threshold
-
-        w, v = scipy.linalg.eigh(j2c[q])
-
-        mask = w > threshold
-        w = w[mask]
-        v = v[:, mask]
-
-        # Inverse Cholesky decomposition
-        j2c_chol = np.dot(v * (w**-0.5)[None], v.T.conj())
-
-        logger.debug1(
-            self,
-            "j2c [%d] condition number: %.3g, dropped %d auxiliary functions",
-            q,
-            np.max(w) / np.min(w),
-            np.sum(~mask),
-        )
-
-        return j2c_chol
-
     def build_int3c2e(self, fused_cell):
         """Build the bare 3-center 2-electron integrals.
 
@@ -279,6 +238,7 @@ class CCGDF(BaseGDF):
         kpt_pairs = np.array(kpt_pairs)
 
         # Construct the integral
+        # TODO rewrite and combine with RS stuff
         int3c2e = aux_e2(
             self.cell,
             fused_cell,
@@ -329,6 +289,8 @@ class CCGDF(BaseGDF):
         j3c : list of ndarray
             Array of 3-center Coulomb integrals for each k-point pair.
         """
+
+        # FIXME if mesh isn't defined?
 
         cput0 = (logger.process_clock(), logger.perf_counter())
 
