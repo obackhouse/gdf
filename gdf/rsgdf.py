@@ -11,12 +11,7 @@ from pyscf.gto import moleintor
 from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
 from pyscf.pbc.df.ft_ao import _RangeSeparatedCell
-from pyscf.pbc.df.rsdf_builder import (
-    RCUT_THRESHOLD,
-    _estimate_meshz,
-    _ExtendedMoleFT,
-    estimate_ft_rcut,
-)
+from pyscf.pbc.df.rsdf_builder import RCUT_THRESHOLD, _ExtendedMoleFT
 from pyscf.pbc.df.rsdf_helper import (
     _get_3c2e_Rcuts,
     _get_atom_Rcuts_3c,
@@ -25,16 +20,11 @@ from pyscf.pbc.df.rsdf_helper import (
 )
 from pyscf.pbc.df.rsdf_helper import _get_schwartz_data as _get_schwarz_data
 from pyscf.pbc.df.rsdf_helper import _get_schwartz_dcut as _get_schwarz_dcut
-from pyscf.pbc.df.rsdf_helper import (
-    estimate_mesh_for_omega,
-    estimate_omega_for_npw,
-    intor_j2c,
-    wrap_int3c_nospltbas,
-)
+from pyscf.pbc.df.rsdf_helper import intor_j2c, wrap_int3c_nospltbas
 
+from gdf import ft, parameters
 from gdf.base import BaseGDF
 from gdf.cell import make_auxcell
-from gdf.ft import ft_ao, gen_ft_aopair_kpts, gen_ft_kernel
 
 libpbc = lib.load_library("libpbc")
 
@@ -130,38 +120,38 @@ class RSGDF(BaseGDF):
             kmax = 2 * np.pi * (0.75 / np.pi / cell.vol) ** (1 / 3)
 
         if omega is None:
-            omega, ke_cutoff, mesh = estimate_omega_for_npw(
+            omega, ke_cutoff, mesh = parameters.estimate_omega_for_npw(
                 cell,
                 self.npw_max,
-                precision,
+                precision=precision,
                 kmax=kmax,
-                round2odd=True,
+                round_to_odd=True,
             )
 
             if omega < self.omega_min:
                 omega = self.omega_min
-                ke_cutoff, mesh = estimate_mesh_for_omega(
+                ke_cutoff, mesh = parameters.estimate_mesh_for_omega(
                     cell,
                     omega,
-                    precision,
+                    precision=precision,
                     kmax=kmax,
-                    round2odd=True,
+                    round_to_odd=True,
                 )
 
             if mesh is None:
                 mesh = self.mesh
 
         if mesh is None:
-            ke_cutoff, mesh = estimate_mesh_for_omega(
+            ke_cutoff, mesh = parameters.estimate_mesh_for_omega(
                 cell,
                 omega,
-                precision,
+                precision=precision,
                 kmax=kmax,
-                round2odd=True,
+                round_to_odd=True,
             )
 
         if cell.dimension == 2 and cell.low_dim_ft_type != "inf_vacuum":
-            mesh[2] = _estimate_meshz(cell)
+            mesh[2] = parameters.estimate_meshz(cell)
         elif cell.dimension < 2:
             mesh[cell.dimension :] = cell.mesh[cell.dimension :]
 
@@ -204,15 +194,15 @@ class RSGDF(BaseGDF):
         ke_cutoff = None
 
         if mesh is None:
-            ke_cutoff, mesh = estimate_mesh_for_omega(
+            ke_cutoff, mesh = parameters.estimate_mesh_for_omega(
                 auxcell,
                 omega,
-                precision,
-                round2odd=True,
+                precision=precision,
+                round_to_odd=True,
             )
 
         if self.cell.dimension == 2 and self.cell.low_dim_ft_type != "inf_vacuum":
-            mesh[2] = _estimate_meshz(self.cell)
+            mesh[2] = parameters.estimate_meshz(self.cell)
         elif self.cell.dimension < 2:
             mesh[self.cell.dimension :] = self.cell.mesh[self.cell.dimension :]
 
@@ -284,7 +274,7 @@ class RSGDF(BaseGDF):
 
         # Get the auxbasis charge
         if self.cell.dimension == 3:
-            qaux = ft_ao(auxcell, np.zeros((1, 3)))[0].real
+            qaux = ft.ft_ao(auxcell, np.zeros((1, 3)))[0].real
         else:
             qaux = np.zeros((auxcell.nao_nr(),))
         qaux = np.outer(qaux, qaux)
@@ -304,7 +294,7 @@ class RSGDF(BaseGDF):
                 v -= qaux
 
             # Get the lattice sum
-            G_aux = ft_ao(
+            G_aux = ft.ft_ao(
                 auxcell,
                 vG,
                 b=reciprocal_vectors,
@@ -518,7 +508,7 @@ class RSGDF(BaseGDF):
 
         # Get the Fourier transform kernel
         # FIXME can we drop rs_cell and supmol and just call gen_ft_aopair_kpts or not?
-        ft_kern = gen_ft_kernel(supmol_ft, return_complex=False)
+        ft_kern = ft.gen_ft_kernel(supmol_ft, return_complex=False)
 
         # Get the bare 3c2e integrals (eq. 31, first term)
         int3c2e = self.build_int3c2e(auxcell)
@@ -558,7 +548,7 @@ class RSGDF(BaseGDF):
                 if not policy_inds:
                     continue
 
-                G_aux = ft_ao(
+                G_aux = ft.ft_ao(
                     auxcell,
                     vG,
                     shls_slice=(0, auxcell.nbas),
@@ -572,7 +562,7 @@ class RSGDF(BaseGDF):
 
                 if qpts.is_zero(qpt) and self.cell.dimension == 3:
                     logger.debug(self, "Including net charge of AO products")
-                    vbar = ft_ao(auxcell, np.zeros((1, 3)))[0].real
+                    vbar = ft.ft_ao(auxcell, np.zeros((1, 3)))[0].real
                     vbar *= np.pi / omega**2 / self.cell.vol
                     ovlp = self.cell.pbc_intor("int1e_ovlp", hermi=0, kpts=kpts[kis[policy_inds]])
                     ovlp = [lib.pack_tril(s) for s in ovlp]
@@ -693,7 +683,7 @@ class RSGDF(BaseGDF):
         )
 
         # Build the supmol
-        rcut = estimate_ft_rcut(rs_cell, self.cell.precision, exclude_dd_block=False)
+        rcut = parameters.estimate_ft_rcut(rs_cell, self.cell.precision, exclude_dd_block=False)
         supmol_ft = _ExtendedMoleFT.from_cell(
             rs_cell, self.kpts.kmesh, np.max(rcut), verbose=self.verbose
         )

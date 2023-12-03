@@ -11,14 +11,13 @@ from pyscf import lib
 from pyscf.agf2 import mpi_helper
 from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
-from pyscf.pbc.df.gdf_builder import _guess_eta, auxbar, estimate_ke_cutoff_for_eta
+from pyscf.pbc.df.gdf_builder import auxbar
 from pyscf.pbc.df.incore import aux_e2
-from pyscf.pbc.df.rsdf_builder import _estimate_meshz
 from pyscf.pbc.tools import pbc
 
+from gdf import ft, parameters
 from gdf.base import BaseGDF
 from gdf.cell import fuse_auxcell_chgcell, make_auxcell, make_chgcell
-from gdf.ft import ft_ao, gen_ft_aopair_kpts
 
 libpbc = lib.load_library("libpbc")
 
@@ -78,10 +77,14 @@ class CCGDF(BaseGDF):
         ke_cutoff = None
 
         if eta is None:
-            eta, mesh, ke_cuttoff = _guess_eta(auxcell, kpts=self.kpts._kpts, mesh=mesh)
+            eta, mesh, ke_cuttoff = parameters.estimate_eta(
+                auxcell,
+                kpts=self.kpts._kpts,
+                mesh=mesh,
+            )
 
         if mesh is None:
-            ke_cutoff = estimate_ke_cutoff_for_eta(cell, eta, precision=precision)
+            ke_cutoff = parameters.estimate_ke_cutoff_for_eta(cell, eta, precision=precision)
             mesh = cell.cutoff_to_mesh(ke_cutoff)
 
         if ke_cutoff is None:
@@ -89,7 +92,7 @@ class CCGDF(BaseGDF):
             ke_cutoff = np.min(ke_cutoff)
 
         if cell.dimension == 2 and cell.low_dim_ft_type != "inf_vacuum":
-            mesh[2] = _estimate_meshz(cell)
+            mesh[2] = parameters.estimate_meshz(cell)
         elif cell.dimension < 2:
             mesh[cell.dimension :] = cell.mesh[cell.dimension :]
 
@@ -182,7 +185,7 @@ class CCGDF(BaseGDF):
             v = int2c2e[q]
 
             # Get the lattice sum
-            G_chg = ft_ao(
+            G_chg = ft.ft_ao(
                 fused_cell,
                 vG,
                 b=reciprocal_vectors,
@@ -304,7 +307,7 @@ class CCGDF(BaseGDF):
         reciprocal_vectors = self.cell.reciprocal_vectors()
 
         # Get the Fourier transform kernel
-        ft_aopair_kpts = gen_ft_aopair_kpts(self.cell, kmesh=self.kpts.kmesh)
+        ft_aopair_kpts = ft.gen_ft_aopair_kpts(self.cell, kmesh=self.kpts.kmesh)
 
         # Get the bare 3c2e integrals (eq. 31, first term)
         int3c2e = self.build_int3c2e(fused_cell)
@@ -346,7 +349,7 @@ class CCGDF(BaseGDF):
 
                 # Eq. 33
                 # TODO better MPI - precalculate?
-                G_chg = ft_ao(
+                G_chg = ft.ft_ao(
                     fused_cell,
                     vG,
                     shls_slice=(auxcell.nbas, fused_cell.nbas),
