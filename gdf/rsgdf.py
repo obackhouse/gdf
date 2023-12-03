@@ -34,7 +34,7 @@ from pyscf.pbc.df.rsdf_helper import (
 
 from gdf.base import BaseGDF
 from gdf.cell import make_auxcell
-from gdf.ft import gen_ft_aopair_kpts, gen_ft_kernel, ft_ao
+from gdf.ft import ft_ao, gen_ft_aopair_kpts, gen_ft_kernel
 
 libpbc = lib.load_library("libpbc")
 

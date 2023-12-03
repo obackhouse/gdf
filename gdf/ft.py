@@ -4,7 +4,7 @@
 import ctypes
 
 import numpy as np
-from pyscf import lib, gto
+from pyscf import gto, lib
 from pyscf.lib import logger
 from pyscf.pbc.df.ft_ao import (
     KECUT_THRESHOLD,
@@ -201,7 +201,7 @@ def ft_ao(
         b = gxyz = Gvbase = None
         Gv = Gv + qpt
 
-    if (b is None or gxyz is None or Gvbase is None):
+    if b is None or gxyz is None or Gvbase is None:
         p_gxyzT = lib.c_null_ptr()
         p_gs = (ctypes.c_int * 3)(0, 0, 0)
         p_b = (ctypes.c_double * 1)(0.0)

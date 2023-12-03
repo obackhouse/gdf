@@ -18,7 +18,7 @@ from pyscf.pbc.tools import pbc
 
 from gdf.base import BaseGDF
 from gdf.cell import fuse_auxcell_chgcell, make_auxcell, make_chgcell
-from gdf.ft import gen_ft_aopair_kpts, ft_ao
+from gdf.ft import ft_ao, gen_ft_aopair_kpts
 
 libpbc = lib.load_library("libpbc")
 
