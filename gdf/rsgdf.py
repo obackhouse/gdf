@@ -10,7 +10,7 @@ from pyscf.data.nist import BOHR
 from pyscf.gto import moleintor
 from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
-from pyscf.pbc.df.ft_ao import _RangeSeparatedCell, ft_ao
+from pyscf.pbc.df.ft_ao import _RangeSeparatedCell
 from pyscf.pbc.df.rsdf_builder import (
     RCUT_THRESHOLD,
     _estimate_meshz,
@@ -34,7 +34,7 @@ from pyscf.pbc.df.rsdf_helper import (
 
 from gdf.base import BaseGDF
 from gdf.cell import make_auxcell
-from gdf.ft import gen_ft_aopair_kpts, gen_ft_kernel
+from gdf.ft import gen_ft_aopair_kpts, gen_ft_kernel, ft_ao
 
 libpbc = lib.load_library("libpbc")
 
@@ -310,7 +310,7 @@ class RSGDF(BaseGDF):
                 b=reciprocal_vectors,
                 gxyz=grid,
                 Gvbase=vGbase,
-                kpt=-qpts[q],
+                qpt=-qpts[q],
             ).T
             G_aux_coul = G_aux * weighted_coulG(self, -qpts[q], mesh=mesh, omega=omega)
 
@@ -565,7 +565,7 @@ class RSGDF(BaseGDF):
                     b=reciprocal_vectors,
                     gxyz=grid,
                     Gvbase=vGbase,
-                    kpt=-qpt,
+                    qpt=-qpt,
                 )
                 G_aux *= weighted_coulG(self, -qpt, mesh=mesh, omega=omega)[:, None]
                 logger.debug1(self, "Norm of FT for auxiliary cell: %.6g", np.linalg.norm(G_aux))

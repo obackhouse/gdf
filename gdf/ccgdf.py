@@ -11,7 +11,6 @@ from pyscf import lib
 from pyscf.agf2 import mpi_helper
 from pyscf.lib import logger
 from pyscf.pbc.df.aft import weighted_coulG
-from pyscf.pbc.df.ft_ao import ft_ao
 from pyscf.pbc.df.gdf_builder import _guess_eta, auxbar, estimate_ke_cutoff_for_eta
 from pyscf.pbc.df.incore import aux_e2
 from pyscf.pbc.df.rsdf_builder import _estimate_meshz
@@ -19,7 +18,7 @@ from pyscf.pbc.tools import pbc
 
 from gdf.base import BaseGDF
 from gdf.cell import fuse_auxcell_chgcell, make_auxcell, make_chgcell
-from gdf.ft import gen_ft_aopair_kpts
+from gdf.ft import gen_ft_aopair_kpts, ft_ao
 
 libpbc = lib.load_library("libpbc")
 
@@ -189,7 +188,7 @@ class CCGDF(BaseGDF):
                 b=reciprocal_vectors,
                 gxyz=grid,
                 Gvbase=vGbase,
-                kpt=-qpts[q],
+                qpt=-qpts[q],
             ).T
             G_aux = G_chg[naux:] * weighted_coulG(self, -qpts[q], mesh=mesh)
 
@@ -354,7 +353,7 @@ class CCGDF(BaseGDF):
                     b=reciprocal_vectors,
                     gxyz=grid,
                     Gvbase=vGbase,
-                    kpt=-qpt,
+                    qpt=-qpt,
                 )
                 G_chg *= weighted_coulG(self, -qpt, mesh=mesh).ravel()[:, None]
                 logger.debug1(self, "Norm of FT for fused cell: %.6g", np.linalg.norm(G_chg))

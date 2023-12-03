@@ -4,7 +4,7 @@
 import ctypes
 
 import numpy as np
-from pyscf import lib
+from pyscf import lib, gto
 from pyscf.lib import logger
 from pyscf.pbc.df.ft_ao import (
     KECUT_THRESHOLD,
@@ -15,6 +15,7 @@ from pyscf.pbc.df.ft_ao import (
 )
 
 libpbc = lib.load_library("libpbc")
+libcgto = lib.load_library("libcgto")
 
 
 def gen_ft_aopair_kpts(
@@ -184,3 +185,83 @@ def gen_ft_kernel(
         return out
 
     return ft_kernel
+
+
+def ft_ao(
+    mol,
+    Gv,
+    b=None,
+    gxyz=None,
+    Gvbase=None,
+    qpt=None,
+    shls_slice=None,
+    verbose=None,
+):
+    if qpt is not None and np.max(np.abs(qpt)) > 1e-10:
+        b = gxyz = Gvbase = None
+        Gv = Gv + qpt
+
+    if (b is None or gxyz is None or Gvbase is None):
+        p_gxyzT = lib.c_null_ptr()
+        p_gs = (ctypes.c_int * 3)(0, 0, 0)
+        p_b = (ctypes.c_double * 1)(0.0)
+        eval_gz = getattr(libcgto, "GTO_Gv_general")
+    else:
+        gxyzT = np.asarray(gxyz.T, order="C", dtype=np.int32)
+        p_gxyzT = gxyzT.ctypes.data_as(ctypes.c_void_p)
+        b = np.hstack((b.ravel(), np.zeros(3)) + Gvbase)
+        p_b = b.ctypes.data_as(ctypes.c_void_p)
+        p_gs = (ctypes.c_int * 3)(*[len(x) for x in Gvbase])
+        orth = np.max(np.abs(b - np.diag(np.diag(b)))) < 1e-8
+        eval_gz = getattr(libcgto, f"GTO_Gv_{'orth' if orth else 'nonorth'}")
+    GvT = np.asarray(Gv.T, order="C")
+    shls_slice = shls_slice if shls_slice is not None else (0, mol.nbas)
+
+    fdrv = libcgto.GTO_ft_fill_drv
+    intor = getattr(libcgto, f"GTO_ft_ovlp_{'cart' if mol.cart else 'sph'}")
+    fill = getattr(libcgto, "GTO_ft_zfill_s1")
+
+    ghost_atm = np.zeros((1, 6), dtype=np.int32)
+    ghost_bas = np.zeros((1, 8), dtype=np.int32)
+    ghost_bas[0, 2] = ghost_bas[0, 3] = 1
+    ghost_bas[0, 6] = 3
+    ghost_env = np.zeros((4,), dtype=np.float64)
+    ghost_env[3] = np.sqrt(4.0 * np.pi)  # s function spherical norm
+    atm, bas, env = gto.conc_env(mol._atm, mol._bas, mol._env, ghost_atm, ghost_bas, ghost_env)
+
+    ao_loc = mol.ao_loc_nr()
+    nao = ao_loc[mol.nbas]
+    ao_loc = np.asarray(np.hstack((ao_loc, [nao + 1])), dtype=np.int32)
+    ni = ao_loc[shls_slice[1]] - ao_loc[shls_slice[0]]
+    nish = shls_slice[1] - shls_slice[0]
+    shape = (ni, Gv.shape[0])
+    mat = np.zeros(shape, order="C", dtype=np.complex128)
+    ovlp_mask = np.ones((nish,), dtype=np.int8)
+    phase = 0
+
+    if Gv.shape[0] == 0:
+        return mat
+
+    fdrv(
+        intor,
+        eval_gz,
+        fill,
+        mat.ctypes.data_as(ctypes.c_void_p),
+        ovlp_mask.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(1),
+        (ctypes.c_int * 4)(*shls_slice, mol.nbas, mol.nbas + 1),
+        ao_loc.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_double(phase),
+        GvT.ctypes.data_as(ctypes.c_void_p),
+        p_b,
+        p_gxyzT,
+        p_gs,
+        ctypes.c_int(Gv.shape[0]),
+        atm.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(atm.shape[0]),
+        bas.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(bas.shape[0]),
+        env.ctypes.data_as(ctypes.c_void_p),
+    )
+
+    return mat.T
