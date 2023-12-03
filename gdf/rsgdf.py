@@ -74,7 +74,7 @@ class RSGDF(BaseGDF):
     npw_max = 350
     omega_min = 0.3
     precision_j2c = 1e-14
-    real_space_precision_factor = 1e-2
+    real_space_precision_factor = 1e-5  # FIXME this needs to be much tighter than PySCF
 
     _atributes = BaseGDF._attributes | {
         "omega",
