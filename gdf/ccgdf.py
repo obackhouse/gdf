@@ -345,6 +345,7 @@ class CCGDF(BaseGDF):
                 # If this q-point won't contribute at all to the
                 # required integrals on this rank, skip it
                 if not policy_inds:
+                    # FIXME this basically never happens
                     continue
 
                 # Eq. 33
