@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 from pyscf.agf2 import mpi_helper
 from pyscf.pbc import df as pyscf_df
-from pyscf.pbc import gto
+from pyscf.pbc import gto, scf
 
 from gdf import RSGDF
 
@@ -80,6 +80,30 @@ class TestRSGDF(unittest.TestCase):
 
         self.assertAlmostEqual(np.max(np.abs(j1 - j2)), 0, 7)
         self.assertAlmostEqual(np.max(np.abs(k1 - k2)), 0, 7)
+
+    def test_pyscf_mf(self):
+        cell = gto.Cell()
+        cell.atom = "He 0 0 0; He 1 0 1"
+        cell.a = np.eye(3) * 3
+        cell.basis = "6-31g"
+        cell.verbose = 0
+        cell.build()
+
+        kpts = cell.make_kpts([3, 2, 1])
+
+        df = RSGDF(cell, kpts)
+        df.build()
+
+        mf1 = scf.KRHF(cell, kpts)
+        mf1 = mf1.rs_density_fit(auxbasis="weigend")
+        mf1.with_df._prefer_ccdf = False
+        mf1.kernel()
+
+        mf2 = scf.KRHF(cell, kpts)
+        mf2.with_df = df
+        mf2.kernel()
+
+        self.assertAlmostEqual(mf1.e_tot, mf2.e_tot, 8)
 
 
 
