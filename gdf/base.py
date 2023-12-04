@@ -273,18 +273,26 @@ class BaseGDF(lib.StreamObject):
             rank for the given pair.
         """
 
+        # TODO build just the policy for this rank
+        # TODO benchmark vs. old method, this should cache better
+
+        policies = [{} for _ in range(mpi_helper.size)]
+
+        rank = 0
         i = 0
         idx = 0
-        policy = {}
         for ki in self.kpts.loop(1):
             for kj in range(ki + 1):
-                if i % mpi_helper.size == mpi_helper.rank:
-                    policy[ki, kj] = idx
+                policies[rank][ki, kj] = idx
+                idx += 1
+                if ki != kj:
+                    policies[rank][kj, ki] = idx
                     idx += 1
-                    if ki != kj:
-                        policy[kj, ki] = idx
-                        idx += 1
-                i += 1
+                if len(policies[rank]) >= (self.nkpts**2 // mpi_helper.size):
+                    rank = (rank + 1) % mpi_helper.size
+                    idx = len(policies[rank])
+
+        policy = policies[mpi_helper.rank]
 
         return policy
 
