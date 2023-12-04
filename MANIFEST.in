@@ -11,3 +11,9 @@ recursive-include gdf/lib *.c *.h CMakeLists.txt
 # Shared libraries
 include gdf/lib/*.so
 include gdf/lib/*.dylib
+
+# Examples
+recursive-include examples *.py *.ipynb
+
+# Tests
+recursive-include tests *.py *.ipynb
