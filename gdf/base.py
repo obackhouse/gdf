@@ -275,6 +275,7 @@ class BaseGDF(lib.StreamObject):
 
         # TODO build just the policy for this rank
         # TODO benchmark vs. old method, this should cache better
+        # TODO this is still far from optimal: prioritise cache locality!
 
         policies = [{} for _ in range(mpi_helper.size)]
 
