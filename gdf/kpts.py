@@ -450,11 +450,13 @@ class KPoints:
         """
         return str(self._kpts)
 
-    def __array__(self):
+    def __array__(self, dtype=None):
         """
         Get the k-points as a numpy array.
         """
-        return np.asarray(self._kpts)
+        if dtype is None:
+            dtype = self._kpts.dtype
+        return np.asarray(self._kpts, dtype=dtype)
 
     @property
     def T(self):
