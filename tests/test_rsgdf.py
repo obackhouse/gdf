@@ -106,6 +106,32 @@ class TestRSGDF(unittest.TestCase):
         self.assertAlmostEqual(mf1.e_tot, mf2.e_tot, 8)
 
 
+class TestRSGDF_exp_to_discard(TestRSGDF):
+    @classmethod
+    def setUpClass(self):
+        cell = gto.Cell()
+        cell.atom = "Si 0 0 0; Si {r} {r} {r}".format(r=5.31/2)
+        cell.basis = "gth-szv"
+        cell.pseudo = "gth-pade"
+        cell.a = (np.ones((3, 3)) - np.eye(3)) * 5.31
+        cell.verbose = 0
+        cell.precision = 1e-14
+        cell.exp_to_discard = 0.1
+        cell.build()
+
+        kpts = cell.make_kpts([2, 1, 1])
+
+        df_ref = pyscf_df.RSGDF(cell, kpts)
+        df_ref.auxbasis = "weigend"
+        df_ref._prefer_ccdf = False
+        df_ref.build()
+
+        df = RSGDF(cell, kpts, auxbasis="weigend")
+        df.build()
+
+        self.df_ref, self.df, self.kpts = df_ref, df, kpts
+
+
 
 if __name__ == "__main__":
     unittest.main()
