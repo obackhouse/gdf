@@ -197,6 +197,13 @@ def ft_ao(
     shls_slice=None,
     verbose=None,
 ):
+    # FIXME
+    from pyscf.pbc.df.ft_ao import ft_ao as ft_ao_pbc
+
+    if qpt is None:
+        qpt = np.zeros(3)
+    return ft_ao_pbc(mol, Gv, shls_slice, b, gxyz, Gvbase, qpt, verbose)
+
     if qpt is not None and np.max(np.abs(qpt)) > 1e-10:
         b = gxyz = Gvbase = None
         Gv = Gv + qpt

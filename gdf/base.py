@@ -47,8 +47,8 @@ class BaseGDF(lib.StreamObject):
     auxbasis : str
         Auxiliary basis set. Default value is `"weigend"`.
     exp_to_discard : float
-        Threshold for discarding auxiliary basis functions. Default
-        value is `0.0`.
+        Threshold for discarding auxiliary basis functions. If `None`,
+        inherit from `cell`. Default value is `None`.
     linear_dep_threshold : float
         Threshold for linear dependence of auxiliary basis functions.
         Default value is `1e-10`.
@@ -63,7 +63,7 @@ class BaseGDF(lib.StreamObject):
 
     # Attributes:
     auxbasis = "weigend"
-    exp_to_discard = 0.0
+    exp_to_discard = None
     linear_dep_threshold = 1e-10
     mesh = None
 
@@ -80,6 +80,8 @@ class BaseGDF(lib.StreamObject):
         self.cell = cell
         self.kpts = kpts if isinstance(kpts, KPoints) else KPoints(cell, kpts)
         self.auxbasis = auxbasis if auxbasis is not None else self.auxbasis
+        if self.exp_to_discard is None:
+            self.exp_to_discard = 0.0 if cell.exp_to_discard is None else cell.exp_to_discard
 
         # Logging:
         self.stdout = cell.stdout

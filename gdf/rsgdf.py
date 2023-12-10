@@ -230,7 +230,7 @@ class RSGDF(BaseGDF):
         cput0 = (logger.process_clock(), logger.perf_counter())
         qpts, _ = self.get_qpts(time_reversal_symmetry=True)
         if omega is None:
-            omega = self.omega_j2c
+            omega = abs(self.omega_j2c)
 
         # FIXME
         int2c2e = intor_j2c(auxcell, omega, kpts=-qpts._kpts)
@@ -653,7 +653,7 @@ class RSGDF(BaseGDF):
         drop_eta = self.exp_to_discard
         if drop_eta is not None and drop_eta > 0:
             logger.info(self, "Drop primitive fitting functions with exponent < %s", drop_eta)
-            from rsdf_helper import remove_exp_basis
+            from pyscf.pbc.df.rsdf_helper import remove_exp_basis
 
             auxbasis = remove_exp_basis(auxcell._basis, amin=drop_eta)
             auxcellnew = make_auxmol(self.cell, auxbasis)
