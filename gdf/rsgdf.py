@@ -75,6 +75,15 @@ class RSGDF(BaseGDF):
         "precision_j2c",
         "real_space_precision_factor",
     }
+    _keys = BaseGDF._keys | {
+        "omega",
+        "omega_j2c",
+        "mesh_j2c",
+        "npw_max",
+        "omega_min",
+        "precision_j2c",
+        "real_space_precision_factor",
+    }
 
     def get_mesh_parameters(self, cell=None, omega=None, mesh=None, precision=None):
         """
