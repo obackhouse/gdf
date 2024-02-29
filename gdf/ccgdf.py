@@ -36,7 +36,7 @@ class CCGDF(BaseGDF):
     eta = None
 
     _attributes = BaseGDF._attributes | {"eta"}
-    _keys = BaseGDF._keys | self._attributes
+    _keys = BaseGDF._keys | {"eta"}
 
     def get_mesh_parameters(self, cell=None, auxcell=None, eta=None, mesh=None, precision=None):
         """

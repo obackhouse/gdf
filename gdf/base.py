@@ -68,7 +68,7 @@ class BaseGDF(lib.StreamObject):
     mesh = None
 
     _attributes = {"auxbasis", "exp_to_discard", "linear_dep_threshold", "mesh"}
-    _keys = self._attributes | {"cell", "kpts", "stdout", "verbose"}
+    _keys = _attributes | {"cell", "kpts", "stdout", "verbose"}
 
     def __init__(
         self,
