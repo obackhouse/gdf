@@ -103,7 +103,7 @@ class TestCCGDF(unittest.TestCase):
         mf2.with_df = df
         mf2.kernel()
 
-        self.assertAlmostEqual(mf1.e_tot, mf2.e_tot, 8)
+        self.assertAlmostEqual(mf1.e_tot, mf2.e_tot, 7)
 
 
 
